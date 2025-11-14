@@ -1,32 +1,508 @@
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+import warnings
+
+@dataclass
+class DataQualityIssue:
+    """数据质量问题记录"""
+    issue_type: str
+    description: str
+    timestamp: datetime
+    contract: str
+    severity: str  # low, medium, high
+    action_taken: str
 
 @dataclass
 class ContractRollover:
     """合约切换事件的数据结构"""
-    rollover_datetime: datetime  # 切换的具体时间点
-    old_contract: str           # 旧合约代码
-    new_contract: str           # 新合约代码
-    old_close: float           # 旧合约最后的价格
-    new_open: float            # 新合约开始的价格
-    price_gap: float           # 价格差距
-    adjustment_factor: float   # 调整因子
+    rollover_datetime: datetime
+    old_contract: str
+    new_contract: str
+    old_close: float
+    new_open: float
+    price_gap: float
+    adjustment_factor: float
+    is_valid: bool = True  # 标记切换点是否有效
     
     def __post_init__(self):
         """计算价格差距和调整因子"""
         self.price_gap = self.new_open - self.old_close
         self.adjustment_factor = self.new_open / self.old_close if self.old_close != 0 else 1.0
 
-class FuturesDataProcessor:
-    """期货数据处理类 - 简化版本"""
+
+class RolloverDetector:
+    """合约切换点检测器"""
     
-    def __init__(self):
+    def __init__(self, min_volume: float = 0, price_change_threshold: float = 0.5):
+        self.min_volume = min_volume
+        self.price_change_threshold = price_change_threshold  # 价格变化阈值，用于验证切换点
+    
+    def detect_rollover_points(self, data: pd.DataFrame) -> List[ContractRollover]:
+        """检测合约切换点"""
+        if data is None:
+            raise ValueError("数据未加载")
+            
+        # 按时间排序
+        data = data.sort_values('datetime').reset_index(drop=True)
+        
+        # 检测symbol变化点
+        data['symbol_change'] = data['symbol'] != data['symbol'].shift(1)
+        change_indices = data[data['symbol_change']].index.tolist()
+        
+        # 移除第一个点（可能是数据开始）
+        if change_indices and change_indices[0] == 0:
+            change_indices = change_indices[1:]
+        
+        print(f"初步检测到 {len(change_indices)} 个合约切换点")
+        
+        # 构建切换事件并进行验证
+        rollover_points = []
+        for idx in change_indices:
+            try:
+                # 获取切换前后的数据
+                old_row = data.iloc[idx - 1]
+                new_row = data.iloc[idx]
+                
+                # 创建切换事件
+                rollover = ContractRollover(
+                    rollover_datetime=new_row['datetime'],
+                    old_contract=old_row['symbol'],
+                    new_contract=new_row['symbol'],
+                    old_close=old_row['close'],
+                    new_open=new_row['open'],
+                    price_gap=0,
+                    adjustment_factor=1.0
+                )
+                
+                # 验证切换点
+                rollover.is_valid = self._validate_rollover(rollover, old_row, new_row)
+                
+                rollover_points.append(rollover)
+                
+                status = "有效" if rollover.is_valid else "可疑"
+                print(f"切换点 {rollover.rollover_datetime}: {rollover.old_contract} -> {rollover.new_contract}, "
+                      f"价差: {rollover.price_gap:.2f}, 状态: {status}")
+                      
+            except Exception as e:
+                print(f"处理切换点 {idx} 时出错: {e}")
+                continue
+        
+        # 统计有效切换点
+        valid_count = sum(1 for rp in rollover_points if rp.is_valid)
+        print(f"有效切换点: {valid_count}/{len(rollover_points)}")
+        
+        return rollover_points
+    
+    def _validate_rollover(self, rollover: ContractRollover, old_row: pd.Series, new_row: pd.Series) -> bool:
+        """验证切换点是否有效"""
+        # 检查价格是否合理
+        if rollover.old_close <= 0 or rollover.new_open <= 0:
+            print(f"  警告: 价格异常 - 旧合约收盘: {rollover.old_close}, 新合约开盘: {rollover.new_open}")
+            return False
+        
+        # 检查价格变化是否在合理范围内
+        price_change_ratio = abs(rollover.price_gap) / rollover.old_close
+        if price_change_ratio > self.price_change_threshold:
+            print(f"  警告: 价格跳空过大 - 变化率: {price_change_ratio:.2%}")
+            return False
+        
+        # 检查成交量是否足够
+        if 'volume' in old_row and old_row['volume'] < self.min_volume:
+            print(f"  警告: 旧合约成交量过低 - {old_row['volume']}")
+            return False
+        
+        if 'volume' in new_row and new_row['volume'] < self.min_volume:
+            print(f"  警告: 新合约成交量过低 - {new_row['volume']}")
+            return False
+        
+        return True
+
+
+class DataQualityChecker:
+    """数据质量检查器 - 考虑合约切换点"""
+    
+    def __init__(self, rollover_points: Optional[List[ContractRollover]] = None):
+        self.issues = []
+        self.rollover_points = rollover_points or []
+        self.rollover_times = [rp.rollover_datetime for rp in self.rollover_points if rp.is_valid]
+    
+    def check_missing_values(self, data: pd.DataFrame) -> List[DataQualityIssue]:
+        """检查缺失值"""
+        issues = []
+        
+        # 检查整体缺失情况
+        missing_stats = data.isnull().sum()
+        total_rows = len(data)
+        
+        for column, missing_count in missing_stats.items():
+            if missing_count > 0:
+                missing_pct = (missing_count / total_rows) * 100
+                severity = "high" if missing_pct > 5 else "medium" if missing_pct > 1 else "low"
+                
+                issue = DataQualityIssue(
+                    issue_type="missing_value",
+                    description=f"字段 {column} 有 {missing_count} 个缺失值 ({missing_pct:.2f}%)",
+                    timestamp=data['datetime'].min() if 'datetime' in data.columns else datetime.now(),
+                    contract="all",
+                    severity=severity,
+                    action_taken="待处理"
+                )
+                issues.append(issue)
+        
+        # 检查时间连续性
+        if 'datetime' in data.columns:
+            time_gaps = data['datetime'].diff()
+            # 寻找异常大的时间间隔（排除正常交易间隔）
+            normal_trading_hours_mask = self._get_normal_trading_hours_mask(data['datetime'])
+            abnormal_gaps = time_gaps[~normal_trading_hours_mask & (time_gaps > timedelta(hours=4))]
+            
+            for gap in abnormal_gaps.unique():
+                count = (time_gaps == gap).sum()
+                issue = DataQualityIssue(
+                    issue_type="time_gap",
+                    description=f"异常时间间隔: {gap}, 出现 {count} 次",
+                    timestamp=data['datetime'].min(),
+                    contract="all",
+                    severity="medium",
+                    action_taken="待处理"
+                )
+                issues.append(issue)
+        
+        self.issues.extend(issues)
+        return issues
+    
+    def _get_normal_trading_hours_mask(self, datetimes: pd.Series) -> pd.Series:
+        """判断时间点是否在正常交易时间内"""
+        # 这是一个简化的实现，实际应用中需要根据具体品种的交易时间调整
+        mask = pd.Series(False, index=datetimes.index)
+        for i in range(1, len(datetimes)):
+            time_diff = datetimes.iloc[i] - datetimes.iloc[i-1]
+            # 假设正常交易时间间隔小于4小时
+            if time_diff <= timedelta(hours=4):
+                mask.iloc[i] = True
+        return mask
+    
+    def check_price_anomalies(self, data: pd.DataFrame) -> List[DataQualityIssue]:
+        """检查价格异常 - 排除合约切换点"""
+        issues = []
+        
+        price_columns = ['open', 'high', 'low', 'close']
+        
+        for symbol in data['symbol'].unique():
+            symbol_data = data[data['symbol'] == symbol]
+            
+            for price_col in price_columns:
+                if price_col not in symbol_data.columns:
+                    continue
+                
+                prices = symbol_data[price_col]
+                datetimes = symbol_data['datetime']
+                
+                # 检查负价格
+                negative_prices = prices < 0
+                for idx in symbol_data[negative_prices].index:
+                    # 排除合约切换点附近的数据
+                    if not self._is_near_rollover(datetimes.loc[idx]):
+                        issue = DataQualityIssue(
+                            issue_type="negative_price",
+                            description=f"{price_col} 为负值: {prices[idx]}",
+                            timestamp=datetimes.loc[idx],
+                            contract=symbol,
+                            severity="high",
+                            action_taken="待处理"
+                        )
+                        issues.append(issue)
+                
+                # 检查价格跳空（排除合约切换点）
+                price_changes = prices.pct_change().abs()
+                large_jumps = price_changes > 0.1  # 10%以上的跳空
+                
+                # 排除第一个点和合约切换点附近的数据
+                for idx in symbol_data[large_jumps].index[1:]:
+                    if not self._is_near_rollover(datetimes.loc[idx]):
+                        issue = DataQualityIssue(
+                            issue_type="price_jump",
+                            description=f"{price_col} 异常跳空: {price_changes[idx]:.2%}",
+                            timestamp=datetimes.loc[idx],
+                            contract=symbol,
+                            severity="medium",
+                            action_taken="待处理"
+                        )
+                        issues.append(issue)
+                
+                # 检查OHLC关系合理性
+                if all(col in symbol_data.columns for col in ['open', 'high', 'low', 'close']):
+                    invalid_ohlc = (
+                        (symbol_data['high'] < symbol_data['low']) |
+                        (symbol_data['high'] < symbol_data['open']) |
+                        (symbol_data['high'] < symbol_data['close']) |
+                        (symbol_data['low'] > symbol_data['open']) |
+                        (symbol_data['low'] > symbol_data['close'])
+                    )
+                    
+                    for idx in symbol_data[invalid_ohlc].index:
+                        if not self._is_near_rollover(datetimes.loc[idx]):
+                            issue = DataQualityIssue(
+                                issue_type="invalid_ohlc",
+                                description="OHLC价格关系不合理",
+                                timestamp=datetimes.loc[idx],
+                                contract=symbol,
+                                severity="high",
+                                action_taken="待处理"
+                            )
+                            issues.append(issue)
+        
+        self.issues.extend(issues)
+        return issues
+    
+    def _is_near_rollover(self, timestamp: datetime) -> bool:
+        """判断时间点是否在合约切换点附近"""
+        for rollover_time in self.rollover_times:
+            if abs((timestamp - rollover_time).total_seconds()) < 3600:  # 1小时内
+                return True
+        return False
+    
+    def check_volume_anomalies(self, data: pd.DataFrame) -> List[DataQualityIssue]:
+        """检查成交量异常"""
+        issues = []
+        
+        if 'volume' not in data.columns:
+            return issues
+        
+        for symbol in data['symbol'].unique():
+            symbol_data = data[data['symbol'] == symbol]
+            volumes = symbol_data['volume']
+            datetimes = symbol_data['datetime']
+            
+            # 检查零成交量（排除合约切换点附近）
+            zero_volume = volumes == 0
+            for idx in symbol_data[zero_volume].index:
+                if not self._is_near_rollover(datetimes.loc[idx]):
+                    issue = DataQualityIssue(
+                        issue_type="zero_volume",
+                        description="成交量为零",
+                        timestamp=datetimes.loc[idx],
+                        contract=symbol,
+                        severity="medium",
+                        action_taken="待处理"
+                    )
+                    issues.append(issue)
+            
+            # 检查异常大成交量
+            if len(volumes) > 10:  # 需要有足够数据计算
+                volume_mean = volumes.mean()
+                volume_std = volumes.std()
+                
+                if volume_std > 0:
+                    z_scores = (volumes - volume_mean) / volume_std
+                    extreme_volumes = z_scores.abs() > 5  # Z-score大于5
+                    
+                    for idx in symbol_data[extreme_volumes].index:
+                        if not self._is_near_rollover(datetimes.loc[idx]):
+                            issue = DataQualityIssue(
+                                issue_type="extreme_volume",
+                                description=f"异常成交量: Z-score = {z_scores[idx]:.2f}",
+                                timestamp=datetimes.loc[idx],
+                                contract=symbol,
+                                severity="low",
+                                action_taken="待处理"
+                            )
+                            issues.append(issue)
+        
+        self.issues.extend(issues)
+        return issues
+    
+    def generate_quality_report(self) -> Dict[str, Any]:
+        """生成数据质量报告"""
+        if not self.issues:
+            return {"status": "excellent", "issues_count": 0}
+        
+        issue_types = {}
+        severity_counts = {"low": 0, "medium": 0, "high": 0}
+        
+        for issue in self.issues:
+            issue_types[issue.issue_type] = issue_types.get(issue.issue_type, 0) + 1
+            severity_counts[issue.severity] += 1
+        
+        total_issues = len(self.issues)
+        overall_status = "good" if severity_counts["high"] == 0 else "poor"
+        
+        return {
+            "status": overall_status,
+            "total_issues": total_issues,
+            "issue_types": issue_types,
+            "severity_breakdown": severity_counts,
+            "issues": self.issues
+        }
+
+
+class DataCleaner:
+    """数据清洗器 - 考虑合约切换点"""
+    
+    def __init__(self, rollover_points: Optional[List[ContractRollover]] = None):
+        self.cleaning_log = []
+        self.rollover_points = rollover_points or []
+        self.rollover_times = [rp.rollover_datetime for rp in self.rollover_points if rp.is_valid]
+    
+    def _is_near_rollover(self, timestamp: datetime) -> bool:
+        """判断时间点是否在合约切换点附近"""
+        for rollover_time in self.rollover_times:
+            if abs((timestamp - rollover_time).total_seconds()) < 3600:  # 1小时内
+                return True
+        return False
+    
+    def handle_missing_values(self, data: pd.DataFrame, method: str = "interpolate") -> pd.DataFrame:
+        """处理缺失值"""
+        cleaned_data = data.copy()
+        
+        # 记录原始缺失情况
+        original_missing = cleaned_data.isnull().sum().sum()
+        
+        if method == "interpolate":
+            # 对数值列进行线性插值
+            numeric_columns = cleaned_data.select_dtypes(include=[np.number]).columns
+            
+            # 先按合约分组处理，避免跨合约插值
+            grouped_data = []
+            for symbol in cleaned_data['symbol'].unique():
+                symbol_data = cleaned_data[cleaned_data['symbol'] == symbol].copy()
+                symbol_data[numeric_columns] = symbol_data[numeric_columns].interpolate(method='linear')
+                symbol_data[numeric_columns] = symbol_data[numeric_columns].fillna(method='ffill')
+                symbol_data[numeric_columns] = symbol_data[numeric_columns].fillna(method='bfill')
+                grouped_data.append(symbol_data)
+            
+            cleaned_data = pd.concat(grouped_data).sort_values('datetime').reset_index(drop=True)
+        
+        elif method == "drop":
+            # 删除包含缺失值的行
+            cleaned_data = cleaned_data.dropna()
+        
+        # 记录处理结果
+        final_missing = cleaned_data.isnull().sum().sum()
+        resolved_count = original_missing - final_missing
+        
+        self.cleaning_log.append({
+            "action": "handle_missing_values",
+            "method": method,
+            "original_missing": original_missing,
+            "resolved_count": resolved_count,
+            "remaining_missing": final_missing
+        })
+        
+        return cleaned_data
+    
+    def handle_price_anomalies(self, data: pd.DataFrame) -> pd.DataFrame:
+        """处理价格异常 - 排除合约切换点"""
+        cleaned_data = data.copy()
+        corrections_made = 0
+        
+        price_columns = ['open', 'high', 'low', 'close']
+        
+        for symbol in cleaned_data['symbol'].unique():
+            symbol_mask = cleaned_data['symbol'] == symbol
+            symbol_data = cleaned_data[symbol_mask]
+            
+            for price_col in price_columns:
+                if price_col not in symbol_data.columns:
+                    continue
+                
+                # 创建该合约该列数据的掩码
+                col_mask = symbol_mask & cleaned_data[price_col].notna()
+                
+                # 处理负价格（排除切换点附近）
+                negative_mask = col_mask & (cleaned_data[price_col] < 0)
+                # 排除切换点附近
+                for idx in cleaned_data[negative_mask].index:
+                    if not self._is_near_rollover(cleaned_data.loc[idx, 'datetime']):
+                        # 用前一个有效值替换负价格
+                        prev_valid = cleaned_data.loc[:idx-1, price_col][cleaned_data.loc[:idx-1, price_col] > 0]
+                        if len(prev_valid) > 0:
+                            cleaned_data.loc[idx, price_col] = prev_valid.iloc[-1]
+                            corrections_made += 1
+                
+                # 处理极端价格跳空（排除切换点）
+                price_pct_change = cleaned_data[price_col].pct_change().abs()
+                extreme_jumps = col_mask & (price_pct_change > 0.2)  # 20%以上的跳空
+                
+                # 排除第一个点和切换点附近
+                extreme_jumps_indices = []
+                for idx in cleaned_data[extreme_jumps].index[1:]:
+                    if not self._is_near_rollover(cleaned_data.loc[idx, 'datetime']):
+                        extreme_jumps_indices.append(idx)
+                
+                if extreme_jumps_indices:
+                    # 标记异常点但不立即修正，需要更复杂的处理
+                    cleaned_data.loc[extreme_jumps_indices, f'{price_col}_suspicious'] = True
+                    corrections_made += len(extreme_jumps_indices)
+        
+        self.cleaning_log.append({
+            "action": "handle_price_anomalies",
+            "corrections_made": corrections_made
+        })
+        
+        return cleaned_data
+    
+    def handle_volume_anomalies(self, data: pd.DataFrame) -> pd.DataFrame:
+        """处理成交量异常 - 排除合约切换点"""
+        cleaned_data = data.copy()
+        
+        if 'volume' not in cleaned_data.columns:
+            return cleaned_data
+        
+        corrections_made = 0
+        
+        for symbol in cleaned_data['symbol'].unique():
+            symbol_mask = cleaned_data['symbol'] == symbol
+            symbol_data = cleaned_data[symbol_mask]
+            
+            # 处理零成交量（排除切换点附近）
+            zero_volume_mask = symbol_mask & (cleaned_data['volume'] == 0)
+            zero_volume_indices = []
+            for idx in cleaned_data[zero_volume_mask].index:
+                if not self._is_near_rollover(cleaned_data.loc[idx, 'datetime']):
+                    zero_volume_indices.append(idx)
+            
+            if zero_volume_indices:
+                # 用移动平均值替换（排除零值）
+                for idx in zero_volume_indices:
+                    # 获取附近非零成交量的平均值
+                    nearby_data = symbol_data[
+                        (symbol_data['datetime'] >= cleaned_data.loc[idx, 'datetime'] - timedelta(hours=2)) &
+                        (symbol_data['datetime'] <= cleaned_data.loc[idx, 'datetime'] + timedelta(hours=2)) &
+                        (symbol_data['volume'] > 0)
+                    ]
+                    if len(nearby_data) > 0:
+                        cleaned_data.loc[idx, 'volume'] = nearby_data['volume'].mean()
+                        corrections_made += 1
+        
+        self.cleaning_log.append({
+            "action": "handle_volume_anomalies",
+            "zero_volume_corrected": corrections_made
+        })
+        
+        return cleaned_data
+    
+    def get_cleaning_summary(self) -> Dict[str, Any]:
+        """获取清洗摘要"""
+        return {
+            "total_actions": len(self.cleaning_log),
+            "log": self.cleaning_log
+        }
+
+
+class CorrectFuturesDataProcessor:
+    """正确顺序的期货数据处理类"""
+    
+    def __init__(self, auto_clean: bool = True):
         self.raw_data = None
+        self.cleaned_data = None
         self.rollover_points = []
         self.continuous_data = None
+        self.rollover_detector = RolloverDetector(min_volume=100)
+        self.auto_clean = auto_clean
         
     def load_data_from_csv(self, file_path: str) -> pd.DataFrame:
         """从CSV文件加载数据"""
@@ -35,7 +511,7 @@ class FuturesDataProcessor:
             self.raw_data = pd.read_csv(
                 file_path,
                 parse_dates=['datetime'],
-                dayfirst=True  # 处理日/月/年格式
+                dayfirst=True
             )
             
             # 按时间排序
@@ -46,10 +522,7 @@ class FuturesDataProcessor:
             print(f"- 时间范围: {self.raw_data['datetime'].min()} 到 {self.raw_data['datetime'].max()}")
             print(f"- 合约数量: {self.raw_data['symbol'].nunique()}")
             print(f"- 总数据量: {len(self.raw_data)} 行")
-            
-            # 显示合约列表
-            symbols = self.raw_data['symbol'].unique()
-            print(f"- 包含合约: {list(symbols)}")
+            print(f"- 包含合约: {list(self.raw_data['symbol'].unique())}")
             
             return self.raw_data
             
@@ -57,196 +530,90 @@ class FuturesDataProcessor:
             print(f"数据加载失败: {e}")
             raise
     
-    def clean_data(self, method='interpolate', price_threshold=0.1, volume_threshold=5.0):
-        """
-        清洗数据：处理缺失值和异常值
-        
-        参数:
-        method: 缺失值处理方法，可选 'interpolate'（插值）或 'fill'（向前填充）
-        price_threshold: 价格异常阈值，超过这个比例的变化被视为异常
-        volume_threshold: 成交量异常阈值，超过这个比例的倍数被视为异常
-        """
+    def process_data(self) -> pd.DataFrame:
+        """完整的数据处理流程"""
         if self.raw_data is None:
             raise ValueError("请先加载数据")
         
-        data = self.raw_data.copy()
+        print("\n" + "="*50)
+        print("步骤1: 检测合约切换点")
+        print("="*50)
         
-        # 1. 处理缺失值
-        # 检查是否有缺失的时间点（如果数据是固定频率的）
-        # 这里假设数据已经是按时间排序的
-        data = self._handle_missing_values(data, method)
+        # 第一步：检测合约切换点
+        self.rollover_points = self.rollover_detector.detect_rollover_points(self.raw_data)
+        valid_rollovers = [rp for rp in self.rollover_points if rp.is_valid]
         
-        # 2. 处理异常值
-        data = self._handle_outliers(data, price_threshold, volume_threshold)
+        print(f"\n有效合约切换点: {len(valid_rollovers)} 个")
         
-        self.raw_data = data
-        print("数据清洗完成")
+        print("\n" + "="*50)
+        print("步骤2: 数据质量检查")
+        print("="*50)
         
-        return data
-
-    def _handle_missing_values(self, data, method):
-        """处理缺失值"""
-        # 检查缺失值
-        print("检查缺失值...")
-        missing_count = data.isnull().sum()
-        if missing_count.any():
-            print(f"发现缺失值: {missing_count}")
+        # 第二步：数据质量检查（考虑合约切换点）
+        quality_checker = DataQualityChecker(valid_rollovers)
+        quality_checker.check_missing_values(self.raw_data)
+        quality_checker.check_price_anomalies(self.raw_data)
+        quality_checker.check_volume_anomalies(self.raw_data)
+        
+        quality_report = quality_checker.generate_quality_report()
+        self._print_quality_report(quality_report)
+        
+        # 第三步：数据清洗（考虑合约切换点）
+        if self.auto_clean and quality_report["status"] != "excellent":
+            print("\n" + "="*50)
+            print("步骤3: 数据清洗")
+            print("="*50)
             
-            # 对于时间序列，我们通常用插值或填充
-            numeric_columns = data.select_dtypes(include=[np.number]).columns.tolist()
+            data_cleaner = DataCleaner(valid_rollovers)
+            self.cleaned_data = data_cleaner.handle_missing_values(self.raw_data)
+            self.cleaned_data = data_cleaner.handle_volume_anomalies(self.cleaned_data)
+            self.cleaned_data = data_cleaner.handle_price_anomalies(self.cleaned_data)
             
-            if method == 'interpolate':
-                data[numeric_columns] = data[numeric_columns].interpolate(method='linear')
-                # 如果开头还有缺失，用向后填充
-                data[numeric_columns] = data[numeric_columns].fillna(method='bfill')
-            elif method == 'fill':
-                data[numeric_columns] = data[numeric_columns].fillna(method='ffill').fillna(method='bfill')
+            cleaning_summary = data_cleaner.get_cleaning_summary()
+            print(f"数据清洗完成，执行了 {cleaning_summary['total_actions']} 个清洗操作")
         else:
-            print("未发现缺失值")
-            
-        return data
-
-    def _handle_outliers(self, data, price_threshold, volume_threshold):
-        """处理异常值"""
-        print("检查异常值...")
+            self.cleaned_data = self.raw_data.copy()
+            print("跳过数据清洗（数据质量良好或auto_clean=False）")
         
-        # 价格异常：检查相邻两个时间点的价格变化率是否超过阈值
-        price_columns = ['open', 'high', 'low', 'close']
-        
-        for col in price_columns:
-            # 计算价格变化率
-            price_change = data[col].pct_change().abs()
-            # 标记异常值（变化率超过阈值）
-            outlier_mask = price_change > price_threshold
-            
-            # 排除合约切换点附近的变化（因为换合约可能导致价格跳空）
-            # 我们将在后面处理合约切换点，所以这里先不处理切换点附近的异常
-            # 但注意：如果切换点已经被标记，我们需要排除这些点
-            if len(self.rollover_points) > 0:
-                for rollover in self.rollover_points:
-                    # 将切换点附近的数据排除在异常检测之外
-                    # 这里我们排除切换点前后各1个数据点
-                    rollover_time = rollover.rollover_datetime
-                    idx = data[data['datetime'] == rollover_time].index
-                    if len(idx) > 0:
-                        idx = idx[0]
-                        # 将切换点前后各1个数据点标记为非异常
-                        outlier_mask.loc[max(0, idx-1):min(len(data)-1, idx+1)] = False
-            
-            outlier_count = outlier_mask.sum()
-            if outlier_count > 0:
-                print(f"在{col}中发现{outlier_count}个价格异常点")
-                # 将异常值替换为前一个有效值
-                data.loc[outlier_mask, col] = np.nan
-                data[col] = data[col].fillna(method='ffill')
-            else:
-                print(f"在{col}中未发现异常值")
-        
-        # 成交量异常：检查成交量是否为0或负数，或者异常大
-        volume_col = 'volume'
-        if volume_col in data.columns:
-            # 计算成交量的Z-score（标准化得分）
-            volume_mean = data[volume_col].mean()
-            volume_std = data[volume_col].std()
-            # 如果标准差为0，则所有值相同，无需处理
-            if volume_std > 0:
-                volume_zscore = (data[volume_col] - volume_mean) / volume_std
-                # 标记Z-score绝对值超过volume_threshold的为异常
-                outlier_mask = volume_zscore.abs() > volume_threshold
-                outlier_count = outlier_mask.sum()
-                if outlier_count > 0:
-                    print(f"在{volume_col}中发现{outlier_count}个成交量异常点")
-                    # 将异常值替换为前一个有效值
-                    data.loc[outlier_mask, volume_col] = np.nan
-                    data[volume_col] = data[volume_col].fillna(method='ffill')
-                else:
-                    print(f"在{volume_col}中未发现异常值")
-        
-        # 持仓量异常：类似成交量
-        position_col = 'position'
-        if position_col in data.columns:
-            position_mean = data[position_col].mean()
-            position_std = data[position_col].std()
-            if position_std > 0:
-                position_zscore = (data[position_col] - position_mean) / position_std
-                outlier_mask = position_zscore.abs() > volume_threshold
-                outlier_count = outlier_mask.sum()
-                if outlier_count > 0:
-                    print(f"在{position_col}中发现{outlier_count}个持仓量异常点")
-                    data.loc[outlier_mask, position_col] = np.nan
-                    data[position_col] = data[position_col].fillna(method='ffill')
-                else:
-                    print(f"在{position_col}中未发现异常值")
-                    
-        return data
-
-    def detect_rollover_points_simple(self) -> List[ContractRollover]:
-        """简化版合约切换点检测 - 直接检测symbol变化"""
-        if self.raw_data is None:
-            raise ValueError("请先加载数据")
-            
-        # 检测symbol变化点
-        self.raw_data['symbol_change'] = self.raw_data['symbol'] != self.raw_data['symbol'].shift(1)
-        
-        # 找出所有切换点
-        change_indices = self.raw_data[self.raw_data['symbol_change']].index.tolist()
-        
-        # 移除第一个点（可能是数据开始）
-        if change_indices and change_indices[0] == 0:
-            change_indices = change_indices[1:]
-        
-        print(f"检测到 {len(change_indices)} 个合约切换点")
-        
-        # 构建切换事件
-        self.rollover_points = []
-        for idx in change_indices:
-            try:
-                # 获取切换前后的数据
-                old_row = self.raw_data.iloc[idx - 1]  # 旧合约最后一条数据
-                new_row = self.raw_data.iloc[idx]      # 新合约第一条数据
-                
-                # 创建切换事件
-                rollover = ContractRollover(
-                    rollover_datetime=new_row['datetime'],
-                    old_contract=old_row['symbol'],
-                    new_contract=new_row['symbol'],
-                    old_close=old_row['close'],
-                    new_open=new_row['open'],
-                    price_gap=0,  # 会在__post_init__中计算
-                    adjustment_factor=1.0
-                )
-                
-                self.rollover_points.append(rollover)
-                
-                print(f"切换点 {rollover.rollover_datetime}: {rollover.old_contract} -> {rollover.new_contract}, "
-                      f"价差: {rollover.price_gap:.2f}, 调整因子: {rollover.adjustment_factor:.6f}")
-                      
-            except Exception as e:
-                print(f"处理切换点 {idx} 时出错: {e}")
-                continue
-        
-        return self.rollover_points
+        return self.cleaned_data
     
-    def create_continuous_contract_forward(self, method: str = "forward") -> pd.DataFrame:
-        """修正后的复权方法"""
-        if self.raw_data is None:
-            raise ValueError("请先加载数据")
+    def _print_quality_report(self, report: Dict[str, Any]):
+        """打印质量报告"""
+        print(f"数据质量状态: {report['status']}")
+        print(f"总问题数: {report['total_issues']}")
+        
+        if report['total_issues'] > 0:
+            print("问题类型分布:")
+            for issue_type, count in report['issue_types'].items():
+                print(f"  - {issue_type}: {count}")
             
-        if not self.rollover_points:
-            self.detect_rollover_points_simple()
+            print("严重程度分布:")
+            for severity, count in report['severity_breakdown'].items():
+                print(f"  - {severity}: {count}")
+    
+    def create_continuous_contract(self, method: str = "forward") -> pd.DataFrame:
+        """创建连续合约"""
+        data_to_use = self.cleaned_data if self.cleaned_data is not None else self.raw_data
+        
+        if data_to_use is None:
+            raise ValueError("请先处理数据")
+            
+        # 只使用有效的切换点
+        valid_rollovers = [rp for rp in self.rollover_points if rp.is_valid]
+        
+        if not valid_rollovers:
+            print("没有有效的合约切换点，无法创建连续合约")
+            return data_to_use
 
-        continuous_data = self.raw_data.copy()
-        sorted_rollovers = sorted(self.rollover_points, key=lambda x: x.rollover_datetime)
+        continuous_data = data_to_use.copy()
+        sorted_rollovers = sorted(valid_rollovers, key=lambda x: x.rollover_datetime)
 
         if method == "forward":
             # 前复权：当前价格不变，调整历史价格
-            # 我们需要从最新数据向最老数据反向处理
             continuous_data['cumulative_factor'] = 1.0
             
             # 按时间倒序处理切换点
             for rollover in reversed(sorted_rollovers):
-                # 调整因子应该是新合约价格/旧合约价格
-                # 但为了保持当前价格不变，我们需要反向调整历史价格
                 adjustment_factor = rollover.new_open / rollover.old_close
                 
                 # 调整切换点之前的所有历史数据
@@ -259,7 +626,6 @@ class FuturesDataProcessor:
             
             # 按时间正序处理切换点
             for rollover in sorted_rollovers:
-                # 调整因子应该是旧合约价格/新合约价格
                 adjustment_factor = rollover.old_close / rollover.new_open
                 
                 # 调整切换点及之后的所有未来数据
@@ -285,7 +651,7 @@ class FuturesDataProcessor:
     def plot_price_comparison(self, start_date=None, end_date=None, max_points=5000, sample_step=None):
         """绘制原始价格和复权后价格的对比图"""
         if self.continuous_data is None:
-            self.create_continuous_contract_forward()
+            self.create_continuous_contract("forward")
         
         if self.continuous_data is None:
             raise ValueError("连续合约数据未创建，无法绘图")
@@ -362,89 +728,40 @@ class FuturesDataProcessor:
         plt.show()
 
 def main():
-    """主函数示例"""
+    """正确的数据处理流程示例"""
     # 创建处理器
-    processor = FuturesDataProcessor()
+    processor = CorrectFuturesDataProcessor(auto_clean=True)
     
-    # 这里替换为您的实际CSV文件路径
+    # 加载数据
     data = processor.load_data_from_csv("data/SI.csv")
     
-    # 创建示例数据来演示
-    # print("创建示例数据...")
-    # example_data = create_sample_intraday_data()
-    # processor.raw_data = example_data
-    processor.raw_data = data
-    
-    # 检测切换点
-    rollovers = processor.detect_rollover_points_simple()
-
-     # 新增数据清洗步骤
-    processor.clean_data(method='interpolate', price_threshold=0.1, volume_threshold=5.0)
-    
-    print(f"\n共检测到 {len(rollovers)} 个合约切换事件")
+    # 完整处理流程
+    cleaned_data = processor.process_data()
     
     # 创建连续合约
-    continuous_data = processor.create_continuous_contract_forward()
+    continuous_data = processor.create_continuous_contract("forward")
     
-    # 显示前几行结果
-    print("\n前复权结果预览:")
+    # 显示结果
+    print("\n" + "="*50)
+    print("处理结果")
+    print("="*50)
     cols_to_show = ['datetime', 'symbol', 'close', 'close_adj', 'cumulative_factor']
     print(continuous_data[cols_to_show].head(10))
     
     print("\n=== 调整后价格范围统计 ===")
     for col in ['open_adj', 'high_adj', 'low_adj', 'close_adj']:
-        max_val = continuous_data[col].max()
-        min_val = continuous_data[col].min()
-        print(f"{col}:")
-        print(f"  最小值 = {min_val:.4f}")
-        print(f"  最大值 = {max_val:.4f}")
-    print(f"累计调整因子范围: {continuous_data['cumulative_factor'].min():.6f} ~ {continuous_data['cumulative_factor'].max():.6f}")
-
+        if col in continuous_data.columns:
+            max_val = continuous_data[col].max()
+            min_val = continuous_data[col].min()
+            print(f"{col}:")
+            print(f"  最小值 = {min_val:.4f}")
+            print(f"  最大值 = {max_val:.4f}")
+    
+    if 'cumulative_factor' in continuous_data.columns:
+        print(f"累计调整因子范围: {continuous_data['cumulative_factor'].min():.6f} ~ {continuous_data['cumulative_factor'].max():.6f}")
 
     # 绘制价格对比图
     processor.plot_price_comparison(max_points=5000)
-
-def create_sample_intraday_data() -> pd.DataFrame:
-    """创建日内示例数据"""
-    # 创建时间序列（日内数据，每小时间隔）
-    dates = pd.date_range('2012-12-03 09:00:00', '2012-12-10 15:00:00', freq='1H')
-    # 只保留交易时间（假设9:00-15:00）
-    dates = dates[((dates.hour >= 9) & (dates.hour <= 15))]
     
-    data = []
-    current_contract = 'FG1301'
-    
-    for i, dt in enumerate(dates):
-        # 模拟合约切换：在特定时间点切换
-        if i == 20:  # 切换到FG1305
-            current_contract = 'FG1305'
-        elif i == 40:  # 切换到FG1309
-            current_contract = 'FG1309'
-        
-        # 基础价格 - 不同合约有不同基础价格
-        if current_contract == 'FG1301':
-            base_price = 1350
-        elif current_contract == 'FG1305':
-            base_price = 1370  # 新合约价格更高
-        else:  # FG1309
-            base_price = 1390  # 更远月合约价格更高
-            
-        # 添加一些随机波动
-        price_move = np.random.normal(0, 5)
-        
-        data.append({
-            'datetime': dt,
-            'open': base_price + price_move - 2,
-            'high': base_price + price_move + 5,
-            'low': base_price + price_move - 5,
-            'close': base_price + price_move,
-            'volume': np.random.randint(1000, 5000),
-            'amount': np.random.randint(1000000, 5000000),
-            'position': np.random.randint(5000, 10000),
-            'symbol': current_contract
-        })
-    
-    return pd.DataFrame(data)
-
 if __name__ == "__main__":
     main()
