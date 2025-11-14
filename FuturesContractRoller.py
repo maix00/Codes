@@ -57,6 +57,129 @@ class FuturesDataProcessor:
             print(f"数据加载失败: {e}")
             raise
     
+    def clean_data(self, method='interpolate', price_threshold=0.1, volume_threshold=5.0):
+        """
+        清洗数据：处理缺失值和异常值
+        
+        参数:
+        method: 缺失值处理方法，可选 'interpolate'（插值）或 'fill'（向前填充）
+        price_threshold: 价格异常阈值，超过这个比例的变化被视为异常
+        volume_threshold: 成交量异常阈值，超过这个比例的倍数被视为异常
+        """
+        if self.raw_data is None:
+            raise ValueError("请先加载数据")
+        
+        data = self.raw_data.copy()
+        
+        # 1. 处理缺失值
+        # 检查是否有缺失的时间点（如果数据是固定频率的）
+        # 这里假设数据已经是按时间排序的
+        data = self._handle_missing_values(data, method)
+        
+        # 2. 处理异常值
+        data = self._handle_outliers(data, price_threshold, volume_threshold)
+        
+        self.raw_data = data
+        print("数据清洗完成")
+        
+        return data
+
+    def _handle_missing_values(self, data, method):
+        """处理缺失值"""
+        # 检查缺失值
+        print("检查缺失值...")
+        missing_count = data.isnull().sum()
+        if missing_count.any():
+            print(f"发现缺失值: {missing_count}")
+            
+            # 对于时间序列，我们通常用插值或填充
+            numeric_columns = data.select_dtypes(include=[np.number]).columns.tolist()
+            
+            if method == 'interpolate':
+                data[numeric_columns] = data[numeric_columns].interpolate(method='linear')
+                # 如果开头还有缺失，用向后填充
+                data[numeric_columns] = data[numeric_columns].fillna(method='bfill')
+            elif method == 'fill':
+                data[numeric_columns] = data[numeric_columns].fillna(method='ffill').fillna(method='bfill')
+        else:
+            print("未发现缺失值")
+            
+        return data
+
+    def _handle_outliers(self, data, price_threshold, volume_threshold):
+        """处理异常值"""
+        print("检查异常值...")
+        
+        # 价格异常：检查相邻两个时间点的价格变化率是否超过阈值
+        price_columns = ['open', 'high', 'low', 'close']
+        
+        for col in price_columns:
+            # 计算价格变化率
+            price_change = data[col].pct_change().abs()
+            # 标记异常值（变化率超过阈值）
+            outlier_mask = price_change > price_threshold
+            
+            # 排除合约切换点附近的变化（因为换合约可能导致价格跳空）
+            # 我们将在后面处理合约切换点，所以这里先不处理切换点附近的异常
+            # 但注意：如果切换点已经被标记，我们需要排除这些点
+            if len(self.rollover_points) > 0:
+                for rollover in self.rollover_points:
+                    # 将切换点附近的数据排除在异常检测之外
+                    # 这里我们排除切换点前后各1个数据点
+                    rollover_time = rollover.rollover_datetime
+                    idx = data[data['datetime'] == rollover_time].index
+                    if len(idx) > 0:
+                        idx = idx[0]
+                        # 将切换点前后各1个数据点标记为非异常
+                        outlier_mask.loc[max(0, idx-1):min(len(data)-1, idx+1)] = False
+            
+            outlier_count = outlier_mask.sum()
+            if outlier_count > 0:
+                print(f"在{col}中发现{outlier_count}个价格异常点")
+                # 将异常值替换为前一个有效值
+                data.loc[outlier_mask, col] = np.nan
+                data[col] = data[col].fillna(method='ffill')
+            else:
+                print(f"在{col}中未发现异常值")
+        
+        # 成交量异常：检查成交量是否为0或负数，或者异常大
+        volume_col = 'volume'
+        if volume_col in data.columns:
+            # 计算成交量的Z-score（标准化得分）
+            volume_mean = data[volume_col].mean()
+            volume_std = data[volume_col].std()
+            # 如果标准差为0，则所有值相同，无需处理
+            if volume_std > 0:
+                volume_zscore = (data[volume_col] - volume_mean) / volume_std
+                # 标记Z-score绝对值超过volume_threshold的为异常
+                outlier_mask = volume_zscore.abs() > volume_threshold
+                outlier_count = outlier_mask.sum()
+                if outlier_count > 0:
+                    print(f"在{volume_col}中发现{outlier_count}个成交量异常点")
+                    # 将异常值替换为前一个有效值
+                    data.loc[outlier_mask, volume_col] = np.nan
+                    data[volume_col] = data[volume_col].fillna(method='ffill')
+                else:
+                    print(f"在{volume_col}中未发现异常值")
+        
+        # 持仓量异常：类似成交量
+        position_col = 'position'
+        if position_col in data.columns:
+            position_mean = data[position_col].mean()
+            position_std = data[position_col].std()
+            if position_std > 0:
+                position_zscore = (data[position_col] - position_mean) / position_std
+                outlier_mask = position_zscore.abs() > volume_threshold
+                outlier_count = outlier_mask.sum()
+                if outlier_count > 0:
+                    print(f"在{position_col}中发现{outlier_count}个持仓量异常点")
+                    data.loc[outlier_mask, position_col] = np.nan
+                    data[position_col] = data[position_col].fillna(method='ffill')
+                else:
+                    print(f"在{position_col}中未发现异常值")
+                    
+        return data
+
     def detect_rollover_points_simple(self) -> List[ContractRollover]:
         """简化版合约切换点检测 - 直接检测symbol变化"""
         if self.raw_data is None:
@@ -244,7 +367,7 @@ def main():
     processor = FuturesDataProcessor()
     
     # 这里替换为您的实际CSV文件路径
-    data = processor.load_data_from_csv("data/FG.csv")
+    data = processor.load_data_from_csv("data/SI.csv")
     
     # 创建示例数据来演示
     # print("创建示例数据...")
@@ -254,6 +377,9 @@ def main():
     
     # 检测切换点
     rollovers = processor.detect_rollover_points_simple()
+
+     # 新增数据清洗步骤
+    processor.clean_data(method='interpolate', price_threshold=0.1, volume_threshold=5.0)
     
     print(f"\n共检测到 {len(rollovers)} 个合约切换事件")
     
