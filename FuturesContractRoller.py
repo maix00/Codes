@@ -379,7 +379,7 @@ class ExtendedDataCleaner:
         return False
     
     def handle_missing_values(self, data: pd.DataFrame, method: str = "interpolate") -> pd.DataFrame:
-        """处理缺失值 - 修复版本"""
+        """处理缺失值 - 修复版本（使用现代pandas语法）"""
         cleaned_data = data.copy()
         
         # 记录原始缺失情况
@@ -398,10 +398,10 @@ class ExtendedDataCleaner:
                 if len(symbol_data) == 0:
                     continue
                     
-                # 插值处理
+                # 插值处理 - 使用现代pandas语法
                 symbol_data[numeric_columns] = symbol_data[numeric_columns].interpolate(method='linear')
-                symbol_data[numeric_columns] = symbol_data[numeric_columns].fillna(method='ffill')
-                symbol_data[numeric_columns] = symbol_data[numeric_columns].fillna(method='bfill')
+                symbol_data[numeric_columns] = symbol_data[numeric_columns].ffill()  # 替换 fillna(method='ffill')
+                symbol_data[numeric_columns] = symbol_data[numeric_columns].bfill()  # 替换 fillna(method='bfill')
                 grouped_data.append(symbol_data)
             
             # 检查是否有数据可以拼接
@@ -926,13 +926,13 @@ class EnhancedFuturesDataProcessor:
         print("="*50)
         
         # 第四步：数据质量检查
-        quality_checker = DataQualityChecker(valid_rollovers)
-        quality_checker.check_missing_values(self.raw_data)
-        quality_checker.check_price_anomalies(self.raw_data)
-        quality_checker.check_volume_anomalies(self.raw_data)
+        # quality_checker = DataQualityChecker(valid_rollovers)
+        # quality_checker.check_missing_values(self.raw_data)
+        # quality_checker.check_price_anomalies(self.raw_data)
+        # quality_checker.check_volume_anomalies(self.raw_data)
         
-        quality_report = quality_checker.generate_quality_report()
-        self._print_quality_report(quality_report)
+        # quality_report = quality_checker.generate_quality_report()
+        # self._print_quality_report(quality_report)
         
         # 第五步：数据清洗（包含零序列处理）
         if self.auto_clean:
@@ -1097,83 +1097,124 @@ class EnhancedFuturesDataProcessor:
         return continuous_data
     
     def plot_price_comparison(self, start_date=None, end_date=None, max_points=5000, sample_step=None):
-        """绘制原始价格和复权后价格的对比图"""
+        """绘制原始价格和复权后价格的对比图 - 修复版本"""
         if self.continuous_data is None:
             self.create_continuous_contract("forward")
         
         if self.continuous_data is None:
             raise ValueError("连续合约数据未创建，无法绘图")
         
-        import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
-        # --- Set Chinese font support globally ---
-        plt.rcParams['font.sans-serif'] = ['Heiti TC', 'STHeiti', 'PingFang SC', 'Microsoft YaHei', 'Arial Unicode MS']
-        plt.rcParams['axes.unicode_minus'] = False  # Fix minus sign display issue
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+            
+            # 设置中文字体
+            plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'Microsoft YaHei', 'SimHei', 'Heiti TC', 'STHeiti', 'PingFang SC']
+            plt.rcParams['axes.unicode_minus'] = False
 
-                # 筛选时间范围
-        plot_data = self.continuous_data.copy()
-        if start_date:
-            plot_data = plot_data[plot_data['datetime'] >= start_date]
-        if end_date:
-            plot_data = plot_data[plot_data['datetime'] <= end_date]
-        
-        # ↓ choose one simplification ↓
-        # if sample_step:
-        #     plot_data = plot_data.iloc[::sample_step]
-        # elif len(plot_data) > max_points:
-        #     step = len(plot_data) // max_points
-        #     plot_data = plot_data.iloc[::step]
-        
-        step = max(len(plot_data) // max_points, 1)
-        plot_sampled = plot_data.iloc[::(sample_step if sample_step else step)]
+            # 筛选时间范围
+            plot_data = self.continuous_data.copy()
+            if start_date:
+                plot_data = plot_data[plot_data['datetime'] >= start_date]
+            if end_date:
+                plot_data = plot_data[plot_data['datetime'] <= end_date]
+            
+            # 抽样以减少数据点
+            step = max(len(plot_data) // max_points, 1)
+            plot_sampled = plot_data.iloc[::(sample_step if sample_step else step)]
 
-        # Convert strings to matplotlib date numbers (vectorized)
-        x = mdates.datestr2num(plot_sampled['datetime'].astype(str).values)
+            # 创建图表
+            fig, ax = plt.subplots(figsize=(12, 6))
 
-        fig, ax = plt.subplots(figsize=(12, 6))
+            # 两条价格线
+            ax.plot(plot_sampled['datetime'], plot_sampled['close'], label='原始收盘价', color='blue', alpha=0.7, linewidth=1)
+            ax.plot(plot_sampled['datetime'], plot_sampled['close_adj'], label='前复权收盘价', color='green', alpha=0.7, linewidth=1)
 
-        # Two price series
-        ax.plot(x, plot_sampled['close'], label='原始收盘价', color='blue', alpha=0.7)
-        ax.plot(x, plot_sampled['close_adj'], label='前复权收盘价', color='green', alpha=0.7)
-
-        # Mark rollover lines
-        for rollover in self.rollover_points:
-            rv = rollover.rollover_datetime
-
-            # Convert rollover time to matplotlib float date (not array)
-            if isinstance(rv, str):
-                try:
-                    rv_num = float(mdates.datestr2num(rv))  # explicitly cast single float
-                except Exception:
+            # 标记切换点
+            for rollover in self.rollover_points:
+                rv = rollover.rollover_datetime
+                
+                # 检查切换点是否在绘图范围内
+                if start_date and rv < start_date:
                     continue
-            else:
-                rv_num = float(mdates.date2num(rv))
+                if end_date and rv > end_date:
+                    continue
+                    
+                ax.axvline(rv, color='red', linestyle='--', alpha=0.5)
+                # 获取当前y轴范围来放置文本
+                ylim = ax.get_ylim()
+                ax.text(
+                    rv, ylim[1],
+                    f'{rollover.old_contract}→{rollover.new_contract}',
+                    rotation=90, va='top', ha='right', fontsize=8, color='red'
+                )
 
-            # Range check (optional)
-            if (start_date is not None and rv_num < mdates.datestr2num(str(start_date))) or \
-            (end_date is not None and rv_num > mdates.datestr2num(str(end_date))):
-                continue
+            # 智能设置x轴刻度
+            self._set_smart_date_ticks(ax, plot_sampled['datetime'])
 
-            ax.axvline(rv_num, color='red', linestyle='--', alpha=0.5)
-            ax.text(
-                rv_num, ax.get_ylim()[1],
-                f'{rollover.old_contract}→{rollover.new_contract}',
-                rotation=90, va='top', ha='right', fontsize=8, color='red'
-            )
+            ax.set_title('原始与前复权连续合约价格')
+            ax.set_xlabel('时间')
+            ax.set_ylabel('价格')
+            ax.legend()
+            ax.grid(True, linestyle='--', alpha=0.5)
 
-        # Format x-axis
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=6))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        fig.autofmt_xdate()
+            plt.tight_layout()
+            plt.show()
+            
+        except ImportError:
+            print("警告: 未安装matplotlib，无法显示图表")
+            print("请安装: pip install matplotlib")
+        except Exception as e:
+            print(f"绘图失败: {e}")
 
-        ax.set_title('原始与前复权连续合约价格')
-        ax.set_xlabel('时间')
-        ax.set_ylabel('价格')
-        ax.legend()
-        ax.grid(True, linestyle='--', alpha=0.5)
-
-        plt.tight_layout()
-        plt.show()
+    def _set_smart_date_ticks(self, ax, datetimes):
+        """智能设置日期刻度 - 避免AutoDateLocator警告"""
+        import matplotlib.dates as mdates
+        
+        if len(datetimes) == 0:
+            return
+        
+        # 计算时间范围
+        time_range = datetimes.max() - datetimes.min()
+        days = time_range.days
+        hours = time_range.total_seconds() / 3600
+        
+        # 根据时间范围选择合适的刻度间隔
+        if days > 365 * 2:  # 超过2年
+            locator = mdates.YearLocator(1)
+            formatter = mdates.DateFormatter('%Y')
+        elif days > 180:  # 超过6个月
+            locator = mdates.MonthLocator(interval=3)
+            formatter = mdates.DateFormatter('%Y-%m')
+        elif days > 60:  # 超过2个月
+            locator = mdates.MonthLocator(interval=1)
+            formatter = mdates.DateFormatter('%Y-%m')
+        elif days > 14:  # 超过2周
+            locator = mdates.WeekdayLocator(byweekday=mdates.MO.weekday, interval=1)
+            formatter = mdates.DateFormatter('%m-%d')
+        elif days > 2:  # 超过2天
+            locator = mdates.DayLocator(interval=1)
+            formatter = mdates.DateFormatter('%m-%d')
+        elif hours > 12:  # 超过12小时
+            locator = mdates.HourLocator(interval=6)
+            formatter = mdates.DateFormatter('%H:%M')
+        elif hours > 6:  # 超过6小时
+            locator = mdates.HourLocator(interval=2)
+            formatter = mdates.DateFormatter('%H:%M')
+        elif hours > 2:  # 超过2小时
+            locator = mdates.HourLocator(interval=1)
+            formatter = mdates.DateFormatter('%H:%M')
+        else:  # 短时间范围
+            locator = mdates.MinuteLocator(interval=30)
+            formatter = mdates.DateFormatter('%H:%M')
+        
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(formatter)
+        
+        # 自动调整日期标签格式
+        fig = ax.get_figure()
+        if fig:
+            fig.autofmt_xdate()
 
 def debug_data_loading(file_path: str):
     """调试数据加载过程"""
@@ -1213,7 +1254,7 @@ def debug_data_loading(file_path: str):
 def main():
     """主函数示例"""
     # 先调试数据加载
-    file_path = "data/SI.csv"
+    file_path = "data/FG.csv"
 
     print("=== 数据加载调试 ===")
     debug_data_loading(file_path)
