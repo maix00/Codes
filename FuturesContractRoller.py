@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any, Tuple
 import warnings
 
 @dataclass
@@ -14,6 +14,175 @@ class DataQualityIssue:
     contract: str
     severity: str  # low, medium, high
     action_taken: str
+
+@dataclass
+class ContractRolloverNew:
+    """合约切换事件的数据结构 - 支持日内数据和多种复权方法"""
+    
+    # 基础信息
+    rollover_datetime: datetime
+    old_contract: str
+    new_contract: str
+    
+    # 日内价格数据
+    old_prices: List[Tuple[datetime, float]] = field(default_factory=list)  # (时间戳, 价格)
+    new_prices: List[Tuple[datetime, float]] = field(default_factory=list)
+    
+    # 配置参数
+    window_type: str = "time_based"  # "time_based" 或 "tick_based"
+    window_size_hours: float = 2.0   # 时间窗口大小(小时)
+    window_size_ticks: int = 100     # tick窗口大小
+    settlement_period_minutes: int = 15  # 结算价计算周期
+    
+    # 计算得到的调整因子
+    single_point_adjustment: float = 1.0
+    window_adjustment: float = 1.0
+    price_gap: float = 0.0
+    
+    # 状态标志
+    is_valid: bool = True
+    has_negative_prices: bool = False
+    
+    def __post_init__(self):
+        """计算各种调整因子"""
+        self._calculate_settlement_prices()
+        self._calculate_adjustments()
+        self._check_negative_prices()
+    
+    def _calculate_settlement_prices(self) -> Tuple[float, float]:
+        """计算窗口内的结算价"""
+        # 确定窗口边界
+        window_start = self.rollover_datetime - self._get_window_duration()
+        
+        # 提取窗口内的价格数据
+        old_window_prices = self._get_prices_in_window(self.old_prices, window_start, self.rollover_datetime)
+        new_window_prices = self._get_prices_in_window(self.new_prices, self.rollover_datetime, 
+                                                      self.rollover_datetime + self._get_window_duration())
+        
+        # 计算结算价（窗口内最后N分钟的平均价）
+        old_settlement = self._calculate_period_settlement(old_window_prices, self.rollover_datetime)
+        new_settlement = self._calculate_period_settlement(new_window_prices, self.rollover_datetime)
+        
+        return old_settlement, new_settlement
+    
+    def _get_window_duration(self) -> timedelta:
+        """根据窗口类型返回窗口时长"""
+        if self.window_type == "time_based":
+            return timedelta(hours=self.window_size_hours)
+        else:  # tick_based
+            # 对于tick窗口，我们需要估计平均tick间隔
+            if len(self.old_prices) > 1:
+                avg_interval = (self.old_prices[-1][0] - self.old_prices[0][0]).total_seconds() / len(self.old_prices)
+                window_seconds = avg_interval * self.window_size_ticks
+                return timedelta(seconds=window_seconds)
+            else:
+                return timedelta(hours=1)  # 默认值
+    
+    def _get_prices_in_window(self, prices: List[Tuple[datetime, float]], 
+                             start: datetime, end: datetime) -> List[Tuple[datetime, float]]:
+        """提取指定时间窗口内的价格数据"""
+        return [(ts, price) for ts, price in prices if start <= ts <= end]
+    
+    def _calculate_period_settlement(self, prices: List[Tuple[datetime, float]], 
+                                   reference_time: datetime) -> float:
+        """计算指定时间段内的结算价（最后N分钟的平均价）"""
+        if not prices:
+            return 0.0
+            
+        period_end = reference_time
+        period_start = period_end - timedelta(minutes=self.settlement_period_minutes)
+        
+        # 提取结算周期内的价格
+        settlement_prices = [price for ts, price in prices if period_start <= ts <= period_end]
+        
+        if settlement_prices:
+            return sum(settlement_prices) / len(settlement_prices)
+        else:
+            # 如果没有数据，使用整个窗口的平均值
+            all_prices = [price for _, price in prices]
+            return sum(all_prices) / len(all_prices) if all_prices else 0.0
+    
+    def _calculate_adjustments(self):
+        """计算各种调整因子"""
+        old_settlement, new_settlement = self._calculate_settlement_prices()
+        
+        # 单点调整（使用最接近切换时刻的价格）
+        old_near_price = self._get_price_near_time(self.old_prices, self.rollover_datetime)
+        new_near_price = self._get_price_near_time(self.new_prices, self.rollover_datetime)
+        
+        if old_near_price != 0:
+            self.single_point_adjustment = new_near_price / old_near_price
+        else:
+            self.single_point_adjustment = 1.0
+            self.is_valid = False
+        
+        # 窗口调整
+        if old_settlement != 0:
+            self.window_adjustment = new_settlement / old_settlement
+        else:
+            self.window_adjustment = 1.0
+            self.is_valid = False
+        
+        # 价差
+        self.price_gap = new_settlement - old_settlement
+    
+    def _get_price_near_time(self, prices: List[Tuple[datetime, float]], 
+                           target_time: datetime) -> float:
+        """获取最接近指定时间的价格"""
+        if not prices:
+            return 0.0
+            
+        # 找到最接近的时间点
+        closest_time = min(prices, key=lambda x: abs((x[0] - target_time).total_seconds()))
+        return closest_time[1]
+    
+    def _check_negative_prices(self):
+        """检查价格序列中是否有负数"""
+        all_prices = [price for _, price in self.old_prices + self.new_prices]
+        self.has_negative_prices = any(price < 0 for price in all_prices)
+    
+    def get_adjustment_factor(self, method: str = "percentage") -> float:
+        """根据复权方法返回相应的调整因子"""
+        if method == "percentage":
+            return self.single_point_adjustment
+        elif method == "percentage_window":  
+            return self.window_adjustment
+        elif method == "spread":
+            return 1.0  # 价差复权不使用乘性因子
+        elif method == "index":
+            # 指数复权通常需要额外的逻辑
+            return 1.0
+        else:
+            raise ValueError(f"不支持的复权方法: {method}")
+    
+    def get_price_gap(self, method: str = "spread") -> float:
+        """根据复权方法返回价差"""
+        if method == "spread":
+            return self.price_gap
+        else:
+            return 0.0
+    
+    def recommend_method(self) -> str:
+        """根据价格特征推荐合适的复权方法"""
+        if self.has_negative_prices:
+            return "spread"
+        else:
+            return "percentage_window"
+    
+    def get_window_info(self) -> dict:
+        """返回窗口信息用于调试和分析"""
+        old_settlement, new_settlement = self._calculate_settlement_prices()
+        window_duration = self._get_window_duration()
+        
+        return {
+            "window_type": self.window_type,
+            "window_duration_hours": window_duration.total_seconds() / 3600,
+            "old_settlement": old_settlement,
+            "new_settlement": new_settlement,
+            "old_prices_count": len(self.old_prices),
+            "new_prices_count": len(self.new_prices),
+            "settlement_period_minutes": self.settlement_period_minutes
+        }
 
 @dataclass
 class ContractRollover:
