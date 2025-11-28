@@ -315,7 +315,6 @@ class RolloverAdjustmentConfig:
         self.register_strategy(SpreadAdjustmentStrategy(use_window=False))
         self.register_strategy(SpreadAdjustmentStrategy(use_window=True))
         self.register_strategy(WeightedAverageStrategy())
-        # 添加手动覆盖策略
         self.register_strategy(ManualOverrideStrategy())
 
     def register_strategy(self, strategy: AdjustmentStrategy):
@@ -440,7 +439,7 @@ class RolloverAdjustmentConfig:
 
 @dataclass
 class ContractRollover:
-    """合约切换事件的数据结构"""
+    """合约切换事件的数据结构 - 使用DataFrame存储数据"""
     
     # 基础信息
     rollover_datetime: datetime  # 切换时间点（新合约开始的时间）
@@ -451,9 +450,9 @@ class ContractRollover:
     previous_day_end: Optional[datetime] = None  # 旧合约最后一个数据点时间
     current_day_start: Optional[datetime] = None  # 新合约第一个数据点时间
     
-    # 完整的交易数据
-    old_prices: List[Tuple[datetime, float, float, float]] = field(default_factory=list)
-    new_prices: List[Tuple[datetime, float, float, float]] = field(default_factory=list)
+    # 完整的交易数据 - 使用DataFrame
+    old_data: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
+    new_data: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
     
     # 配置参数
     window_type: str = "time_based"
@@ -476,39 +475,53 @@ class ContractRollover:
             self.adjustment_config = RolloverAdjustmentConfig()
         
         # 如果没有设置关键时间点，自动计算
-        if self.previous_day_end is None and self.old_prices:
-            self.previous_day_end = max(ts for ts, _, _, _ in self.old_prices)
+        if self.previous_day_end is None and not self.old_data.empty:
+            self.previous_day_end = self.old_data['datetime'].max()
         
-        if self.current_day_start is None and self.new_prices:
-            self.current_day_start = min(ts for ts, _, _, _ in self.new_prices)
-    
-    def _calculate_settlement_price(self, data: List[Tuple[datetime, float, float, float]], 
+        if self.current_day_start is None and not self.new_data.empty:
+            self.current_day_start = self.new_data['datetime'].min()
+        
+        # 确保DataFrame有正确的列
+        self._ensure_dataframe_columns()
+
+    def _ensure_dataframe_columns(self):
+        """确保DataFrame包含必要的列"""
+        required_columns = ['datetime', 'open', 'high', 'low', 'close']
+        
+        for df_name in ['old_data', 'new_data']:
+            df = getattr(self, df_name)
+            if not df.empty:
+                for col in required_columns:
+                    if col not in df.columns:
+                        warnings.warn(f"DataFrame {df_name} 缺少列: {col}")
+
+    def _calculate_settlement_price(self, data: pd.DataFrame, 
                                 reference_time: datetime, is_old: bool) -> float:
-        """智能结算价计算 - 增强版本"""
-        if not data:
+        """智能结算价计算 - 使用DataFrame"""
+        if data.empty:
             print(f"      警告: 无数据可用")
             return 0.0
         
         # 获取结算期间的数据
         settlement_data = self._get_settlement_period_data(data, reference_time, is_old)
         
-        if not settlement_data:
+        if settlement_data.empty:
             print(f"      结算期间无数据，尝试替代方案...")
             # 尝试其他方法获取数据
             settlement_data = self._get_alternative_settlement_data(data, reference_time, is_old)
         
-        if not settlement_data:
+        if settlement_data.empty:
             print(f"      所有方法都无法获取数据，返回0")
             return 0.0
         
         # 检查成交量数据的质量
-        total_volume = sum(volume for _, _, volume, _ in settlement_data)
-        unique_prices = len(set(price for _, price, _, _ in settlement_data))
+        total_volume = settlement_data['volume'].sum() if 'volume' in settlement_data.columns else 0
+        unique_prices = settlement_data['close'].nunique()
         
         print(f"      结算数据: {len(settlement_data)}个点, 成交量={total_volume:.0f}, 价格数={unique_prices}")
         
         # 智能选择计算方法
-        if total_volume > 10 and unique_prices >= 2:  # 降低阈值
+        if total_volume > 10 and unique_prices >= 2:
             vwap = self._calculate_vwap(settlement_data)
             print(f"      使用VWAP: {vwap:.4f}")
             return vwap
@@ -521,18 +534,19 @@ class ContractRollover:
             print(f"      使用简单平均: {avg_price:.4f}")
             return avg_price
 
-    def _get_settlement_period_data(self, data: List[Tuple[datetime, float, float, float]], 
-                                reference_time: datetime, is_old: bool) -> List[Tuple[datetime, float, float, float]]:
-        """获取结算期间的数据 - 增强版本"""
+    def _get_settlement_period_data(self, data: pd.DataFrame, 
+                                reference_time: datetime, is_old: bool) -> pd.DataFrame:
+        """获取结算期间的数据 - 使用DataFrame"""
         period_end = reference_time
         period_start = period_end - timedelta(minutes=self.settlement_period_minutes)
         
         print(f"      结算期间: {period_start} 到 {period_end}")
         
-        settlement_data = [(ts, price, volume, position) for ts, price, volume, position in data 
-                        if period_start <= ts <= period_end]
+        # 使用DataFrame的布尔索引
+        mask = (data['datetime'] >= period_start) & (data['datetime'] <= period_end)
+        settlement_data = data[mask]
         
-        if settlement_data:
+        if not settlement_data.empty:
             print(f"      找到结算期间数据: {len(settlement_data)}个点")
             return settlement_data
         
@@ -540,95 +554,52 @@ class ContractRollover:
         print(f"      结算期间无数据，尝试放宽条件...")
         
         # 方法1: 扩大时间窗口
-        expanded_start = period_start - timedelta(minutes=30)  # 扩大30分钟
-        expanded_data = [(ts, price, volume, position) for ts, price, volume, position in data 
-                        if expanded_start <= ts <= period_end]
+        expanded_start = period_start - timedelta(minutes=30)
+        expanded_mask = (data['datetime'] >= expanded_start) & (data['datetime'] <= period_end)
+        expanded_data = data[expanded_mask]
         
-        if expanded_data:
+        if not expanded_data.empty:
             print(f"      扩大窗口后找到数据: {len(expanded_data)}个点")
             return expanded_data
         
-        return []
+        return pd.DataFrame()
 
-    def _get_alternative_settlement_data(self, data: List[Tuple[datetime, float, float, float]], 
-                                    reference_time: datetime, is_old: bool) -> List[Tuple[datetime, float, float, float]]:
-        """获取替代的结算数据"""
-        if not data:
-            return []
-        
-        if is_old:
-            # 对于旧合约：使用最后几个数据点
-            print(f"      旧合约使用最后数据点")
-            # 取最后1小时的数据
-            cutoff_time = reference_time - timedelta(hours=1)
-            recent_data = [(ts, price, volume, position) for ts, price, volume, position in data 
-                        if ts >= cutoff_time]
-            
-            if recent_data:
-                # 取最后10个数据点或全部（取较少者）
-                result = recent_data[-10:] if len(recent_data) > 10 else recent_data
-                print(f"      使用最后{len(result)}个数据点")
-                return result
-            else:
-                # 如果还是没有数据，使用所有可用数据
-                print(f"      使用所有可用数据: {len(data)}个点")
-                return data[-10:] if len(data) > 10 else data
-        else:
-            # 对于新合约：使用前几个数据点
-            print(f"      新合约使用前部数据点")
-            # 取前2小时的数据
-            cutoff_time = reference_time + timedelta(hours=2)
-            early_data = [(ts, price, volume, position) for ts, price, volume, position in data 
-                        if ts <= cutoff_time]
-            
-            if early_data:
-                # 取前10个数据点或全部（取较少者）
-                result = early_data[:10] if len(early_data) > 10 else early_data
-                print(f"      使用前{len(result)}个数据点")
-                return result
-            else:
-                # 如果还是没有数据，使用所有可用数据
-                print(f"      使用所有可用数据: {len(data)}个点")
-                return data[:10] if len(data) > 10 else data
-
-    def _calculate_vwap(self, data: List[Tuple[datetime, float, float, float]]) -> float:
-        """成交量加权平均价"""
-        if not data:
+    def _calculate_vwap(self, data: pd.DataFrame) -> float:
+        """成交量加权平均价 - 使用DataFrame"""
+        if data.empty:
             return 0.0
         
-        total_value = 0.0
-        total_volume = 0.0
-        
-        for ts, price, volume, position in data:
-            total_value += price * volume
-            total_volume += volume
-        
-        if total_volume > 0:
-            vwap = total_value / total_volume
-            print(f"      VWAP计算: {total_value:.2f} / {total_volume:.2f} = {vwap:.4f}")
-            return vwap
-        else:
-            # 如果没有成交量数据，回退到时间加权
+        if 'volume' not in data.columns or data['volume'].sum() == 0:
             print(f"      无成交量数据，回退到TWAP")
             return self._calculate_twap(data)
-
-    def _calculate_twap(self, data: List[Tuple[datetime, float, float, float]]) -> float:
-        """时间加权平均价"""
-        if len(data) < 2:
-            return data[0][1] if data else 0.0
         
-        # 按时间排序
-        sorted_data = sorted(data, key=lambda x: x[0])
+        # 使用典型价格 (high + low + close) / 3 作为VWAP计算的基础
+        typical_price = (data['high'] + data['low'] + data['close']) / 3
+        total_value = (typical_price * data['volume']).sum()
+        total_volume = data['volume'].sum()
+        
+        vwap = total_value / total_volume
+        print(f"      VWAP计算: {total_value:.2f} / {total_volume:.2f} = {vwap:.4f}")
+        return vwap
+
+    def _calculate_twap(self, data: pd.DataFrame) -> float:
+        """时间加权平均价 - 使用DataFrame"""
+        if len(data) < 2:
+            return data['close'].iloc[0] if not data.empty else 0.0
+        
+        # 确保数据按时间排序
+        data_sorted = data.sort_values('datetime')
         
         total_weighted_price = 0.0
         total_time = 0.0
         
-        for i in range(1, len(sorted_data)):
-            prev_ts, prev_price, _, _ = sorted_data[i-1]
-            curr_ts, curr_price, _, _ = sorted_data[i]
+        for i in range(1, len(data_sorted)):
+            prev_row = data_sorted.iloc[i-1]
+            curr_row = data_sorted.iloc[i]
             
-            time_interval = (curr_ts - prev_ts).total_seconds()
-            avg_price = (prev_price + curr_price) / 2
+            time_interval = (curr_row['datetime'] - prev_row['datetime']).total_seconds()
+            # 使用前后两个时间点的平均价格
+            avg_price = (prev_row['close'] + curr_row['close']) / 2
             
             total_weighted_price += avg_price * time_interval
             total_time += time_interval
@@ -638,61 +609,99 @@ class ContractRollover:
             print(f"      TWAP计算: {total_weighted_price:.2f} / {total_time:.2f} = {twap:.4f}")
             return twap
         else:
-            prices = [price for _, price, _, _ in data]
-            simple_avg = sum(prices) / len(prices)
-            print(f"      时间间隔为0，使用简单平均: {simple_avg:.4f}")
-            return simple_avg
+            # 使用所有收盘价的简单平均
+            avg_price = data['close'].mean()
+            print(f"      时间间隔为0，使用简单平均: {avg_price:.4f}")
+            return avg_price
 
-    def _calculate_tick_weighted_price(self, data: List[Tuple[datetime, float, float, float]]) -> float:
+    def _calculate_tick_weighted_price(self, data: pd.DataFrame) -> float:
         """交易次数加权（简单平均）"""
-        if not data:
+        if data.empty:
             return 0.0
         
-        prices = [price for _, price, _, _ in data]
-        avg_price = sum(prices) / len(prices)
-        print(f"      简单平均: {avg_price:.4f} (基于{len(prices)}个价格)")
+        avg_price = data['close'].mean()
+        print(f"      简单平均: {avg_price:.4f} (基于{len(data)}个价格)")
         return avg_price
 
+    def _get_alternative_settlement_data(self, data: pd.DataFrame, 
+                                    reference_time: datetime, is_old: bool) -> pd.DataFrame:
+        """获取替代的结算数据 - 使用DataFrame"""
+        if data.empty:
+            return pd.DataFrame()
+        
+        if is_old:
+            # 对于旧合约：使用最后几个数据点
+            print(f"      旧合约使用最后数据点")
+            # 取最后1小时的数据
+            cutoff_time = reference_time - timedelta(hours=1)
+            recent_data = data[data['datetime'] >= cutoff_time]
+            
+            if not recent_data.empty:
+                # 取最后10个数据点或全部（取较少者）
+                result = recent_data.tail(min(10, len(recent_data)))
+                print(f"      使用最后{len(result)}个数据点")
+                return result
+            else:
+                # 如果还是没有数据，使用所有可用数据
+                print(f"      使用所有可用数据: {len(data)}个点")
+                return data.tail(min(10, len(data)))
+        else:
+            # 对于新合约：使用前几个数据点
+            print(f"      新合约使用前部数据点")
+            # 取前2小时的数据
+            cutoff_time = reference_time + timedelta(hours=2)
+            early_data = data[data['datetime'] <= cutoff_time]
+            
+            if not early_data.empty:
+                # 取前10个数据点或全部（取较少者）
+                result = early_data.head(min(10, len(early_data)))
+                print(f"      使用前{len(result)}个数据点")
+                return result
+            else:
+                # 如果还是没有数据，使用所有可用数据
+                print(f"      使用所有可用数据: {len(data)}个点")
+                return data.head(min(10, len(data)))
+
     def _calculate_settlement_prices(self) -> Tuple[float, float]:
-        """计算结算价 - 使用正确的时间窗口"""
+        """计算结算价 - 使用DataFrame"""
         if self._cached_settlement_prices is not None:
             return self._cached_settlement_prices
             
         print(f"  结算价计算:")
         
         # 使用正确的时间窗口
-        if self.previous_day_end:
+        if self.previous_day_end and not self.old_data.empty:
             # 旧合约：从最后一个数据点往前找窗口
             old_window_start = self.previous_day_end - self._get_window_duration()
-            old_window_data = self._get_data_in_window(self.old_prices, old_window_start, self.previous_day_end)
+            old_window_data = self._get_data_in_window(self.old_data, old_window_start, self.previous_day_end)
             print(f"    旧合约窗口: {old_window_start} 到 {self.previous_day_end}, {len(old_window_data)}个点")
         else:
-            old_window_data = []
-            print(f"    旧合约无previous_day_end时间点")
+            old_window_data = pd.DataFrame()
+            print(f"    旧合约无previous_day_end时间点或无数据")
         
-        if self.current_day_start:
+        if self.current_day_start and not self.new_data.empty:
             # 新合约：从第一个数据点往后找窗口
             new_window_end = self.current_day_start + self._get_window_duration()
-            new_window_data = self._get_data_in_window(self.new_prices, self.current_day_start, new_window_end)
+            new_window_data = self._get_data_in_window(self.new_data, self.current_day_start, new_window_end)
             print(f"    新合约窗口: {self.current_day_start} 到 {new_window_end}, {len(new_window_data)}个点")
         else:
-            new_window_data = []
-            print(f"    新合约无current_day_start时间点")
+            new_window_data = pd.DataFrame()
+            print(f"    新合约无current_day_start时间点或无数据")
         
         # 使用增强方法计算结算价
         old_settlement = self._calculate_settlement_price(old_window_data, self.previous_day_end, is_old=True) if self.previous_day_end else 0.0
         new_settlement = self._calculate_settlement_price(new_window_data, self.current_day_start, is_old=False) if self.current_day_start else 0.0
         
         # 如果旧合约结算价仍然为0，使用最后可用价格
-        if old_settlement == 0 and old_window_data:
+        if old_settlement == 0 and not old_window_data.empty:
             print(f"    旧合约结算价仍为0，使用最后价格")
-            old_settlement = old_window_data[-1][1]  # 使用最后一个价格
+            old_settlement = old_window_data['close'].iloc[-1]
             print(f"    使用最后价格: {old_settlement:.4f}")
         
         # 如果新合约结算价为0，使用第一个可用价格
-        if new_settlement == 0 and new_window_data:
+        if new_settlement == 0 and not new_window_data.empty:
             print(f"    新合约结算价为0，使用第一个价格")
-            new_settlement = new_window_data[0][1]  # 使用第一个价格
+            new_settlement = new_window_data['close'].iloc[0]
             print(f"    使用第一个价格: {new_settlement:.4f}")
         
         print(f"    最终结算价: 旧={old_settlement:.4f}, 新={new_settlement:.4f}")
@@ -700,31 +709,112 @@ class ContractRollover:
         self._cached_settlement_prices = (old_settlement, new_settlement)
         return self._cached_settlement_prices
 
-    def _get_data_in_window(self, data: List[Tuple[datetime, float, float, float]], 
-                        start: datetime, end: datetime) -> List[Tuple[datetime, float, float, float]]:
-        """获取窗口内的完整数据"""
-        if not data:
-            return []
+    def _get_data_in_window(self, data: pd.DataFrame, 
+                        start: datetime, end: datetime) -> pd.DataFrame:
+        """获取窗口内的完整数据 - 使用DataFrame"""
+        if data.empty:
+            return pd.DataFrame()
         
         # 确保时间窗口合理
         if start > end:
             start, end = end, start
         
-        window_data = [(ts, price, volume, position) for ts, price, volume, position in data 
-                    if start <= ts <= end]
+        window_mask = (data['datetime'] >= start) & (data['datetime'] <= end)
+        window_data = data[window_mask]
         
         # 如果窗口内数据太少，适当扩大窗口
         if len(window_data) < 5 and len(data) > 0:
             print(f"      窗口内数据较少({len(window_data)}个点)，适当扩大窗口")
             # 扩大窗口到包含更多数据
-            all_times = [ts for ts, _, _, _ in data]
-            if all_times:
-                expanded_start = min(all_times)
-                expanded_end = max(all_times)
-                window_data = [(ts, price, volume, position) for ts, price, volume, position in data 
-                            if expanded_start <= ts <= expanded_end]
+            expanded_start = data['datetime'].min()
+            expanded_end = data['datetime'].max()
+            expanded_mask = (data['datetime'] >= expanded_start) & (data['datetime'] <= expanded_end)
+            window_data = data[expanded_mask]
         
         return window_data
+
+    # 更新其他辅助方法
+    def _calculate_single_point_prices(self) -> Tuple[float, float]:
+        """计算单点价格（用于非窗口策略）"""
+        if self._cached_single_point_prices is not None:
+            return self._cached_single_point_prices
+            
+        # 从DataFrame中提取价格
+        old_price = self._get_price_near_time(self.old_data, self.rollover_datetime)
+        new_price = self._get_price_near_time(self.new_data, self.rollover_datetime)
+        
+        self._cached_single_point_prices = (old_price, new_price)
+        return self._cached_single_point_prices
+    
+    def _get_price_near_time(self, data: pd.DataFrame, target_time: datetime) -> float:
+        """获取最接近目标时间的价格 - 使用DataFrame"""
+        if data.empty:
+            return 0.0
+            
+        # 计算时间差
+        time_diffs = (data['datetime'] - target_time).abs()
+        closest_idx = time_diffs.idxmin()
+        return data.loc[closest_idx, 'close']
+
+    def has_negative_prices(self) -> bool:
+        """检查是否有负价格"""
+        if self._cached_negative_check is not None:
+            return self._cached_negative_check
+            
+        # 检查所有价格列
+        price_columns = ['open', 'high', 'low', 'close']
+        all_negative = False
+        
+        for df in [self.old_data, self.new_data]:
+            if not df.empty:
+                for col in price_columns:
+                    if col in df.columns and (df[col] < 0).any():
+                        all_negative = True
+                        break
+        
+        self._cached_negative_check = all_negative
+        return self._cached_negative_check
+
+    def get_data_summary(self) -> Dict[str, Any]:
+        """获取数据摘要"""
+        return {
+            'old_contract': {
+                'data_points': len(self.old_data),
+                'time_range': (self.old_data['datetime'].min(), self.old_data['datetime'].max()) if not self.old_data.empty else (None, None),
+                'columns': list(self.old_data.columns) if not self.old_data.empty else []
+            },
+            'new_contract': {
+                'data_points': len(self.new_data),
+                'time_range': (self.new_data['datetime'].min(), self.new_data['datetime'].max()) if not self.new_data.empty else (None, None),
+                'columns': list(self.new_data.columns) if not self.new_data.empty else []
+            }
+        }
+
+    # def _get_data_in_window(self, data: List[Tuple[datetime, float, float, float]], 
+    #                     start: datetime, end: datetime) -> List[Tuple[datetime, float, float, float]]:
+    #     """获取窗口内的完整数据"""
+    #     if not data:
+    #         return []
+        
+    #     # 确保时间窗口合理
+    #     if start > end:
+    #         start, end = end, start
+        
+    #     window_data = [(ts, price, volume, position) for ts, price, volume, position in data 
+    #                 if start <= ts <= end]
+        
+    #     # 如果窗口内数据太少，适当扩大窗口
+    #     if len(window_data) < 5 and len(data) > 0:
+    #         print(f"      窗口内数据较少({len(window_data)}个点)，适当扩大窗口")
+    #         # 扩大窗口到包含更多数据
+    #         all_times = [ts for ts, _, _, _ in data]
+    #         if all_times:
+    #             expanded_start = min(all_times)
+    #             expanded_end = max(all_times)
+    #             window_data = [(ts, price, volume, position) for ts, price, volume, position in data 
+    #                         if expanded_start <= ts <= expanded_end]
+        
+    #     return window_data
     
     def set_custom_strategy(self, strategy_name: str):
         """设置个性化策略（覆盖配置）"""
@@ -809,17 +899,17 @@ class ContractRollover:
         else:
             return "未知策略"
     
-    def _calculate_single_point_prices(self) -> Tuple[float, float]:
-        """计算单点价格（用于非窗口策略）"""
-        if self._cached_single_point_prices is not None:
-            return self._cached_single_point_prices
+    # def _calculate_single_point_prices(self) -> Tuple[float, float]:
+    #     """计算单点价格（用于非窗口策略）"""
+    #     if self._cached_single_point_prices is not None:
+    #         return self._cached_single_point_prices
             
-        # 从完整数据中提取价格
-        old_price = self._get_price_near_time(self.old_prices, self.rollover_datetime)
-        new_price = self._get_price_near_time(self.new_prices, self.rollover_datetime)
+    #     # 从完整数据中提取价格
+    #     old_price = self._get_price_near_time(self.old_prices, self.rollover_datetime)
+    #     new_price = self._get_price_near_time(self.new_prices, self.rollover_datetime)
         
-        self._cached_single_point_prices = (old_price, new_price)
-        return self._cached_single_point_prices
+    #     self._cached_single_point_prices = (old_price, new_price)
+    #     return self._cached_single_point_prices
     
     def _check_negative_prices_in_method(self, method: str) -> bool:
         """检查特定方法中是否有负价格"""
@@ -834,15 +924,15 @@ class ContractRollover:
         else:
             return False
     
-    def has_negative_prices(self) -> bool:
-        """检查是否有负价格"""
-        if self._cached_negative_check is not None:
-            return self._cached_negative_check
+    # def has_negative_prices(self) -> bool:
+    #     """检查是否有负价格"""
+    #     if self._cached_negative_check is not None:
+    #         return self._cached_negative_check
             
-        # 从完整数据中提取价格
-        all_prices = [price for _, price, _, _ in self.old_prices + self.new_prices]
-        self._cached_negative_check = any(price < 0 for price in all_prices)
-        return self._cached_negative_check
+    #     # 从完整数据中提取价格
+    #     all_prices = [price for _, price, _, _ in self.old_prices + self.new_prices]
+    #     self._cached_negative_check = any(price < 0 for price in all_prices)
+    #     return self._cached_negative_check
     
     # 原有的辅助方法保持不变
     def _get_window_duration(self) -> timedelta:
@@ -889,16 +979,16 @@ class ContractRollover:
                 print(f"      警告: 完全无价格数据")
                 return 0.0
     
-    def _get_price_near_time(self, data: List[Tuple[datetime, float, float, float]], 
-                        target_time: datetime) -> float:
-        """获取最接近目标时间的价格"""
-        if not data:
-            return 0.0
+    # def _get_price_near_time(self, data: List[Tuple[datetime, float, float, float]], 
+    #                     target_time: datetime) -> float:
+    #     """获取最接近目标时间的价格"""
+    #     if not data:
+    #         return 0.0
             
-        # 从完整数据中提取时间戳和价格
-        price_data = [(ts, price) for ts, price, volume, position in data]
-        closest_time = min(price_data, key=lambda x: abs((x[0] - target_time).total_seconds()))
-        return closest_time[1]
+    #     # 从完整数据中提取时间戳和价格
+    #     price_data = [(ts, price) for ts, price, volume, position in data]
+    #     closest_time = min(price_data, key=lambda x: abs((x[0] - target_time).total_seconds()))
+    #     return closest_time[1]
     
     def get_window_info(self) -> dict:
         old_settlement, new_settlement = self._calculate_settlement_prices()
@@ -2175,103 +2265,289 @@ class ExtendedDataCleaner:
         
         return analysis
 
-class EnhancedFuturesDataProcessor:
+class FuturesDataProcessor:
     """增强版期货数据处理类 - 集成零序列处理"""
     
-    def __init__(self, auto_clean: bool = True, zero_handling_strategy: str = "interpolate"):
+    def __init__(
+        self, 
+        data_path: Optional[str] = None,
+        auto_detect_rollovers: bool = True,
+        auto_clean: bool = True, 
+        zero_handling_strategy: str = "interpolate",
+        adjustment_config: Optional[RolloverAdjustmentConfig] = None,
+        rollover_detector_config: Optional[Dict[str, Any]] = None,
+        silent_mode: bool = False,
+        # 新增配置选项
+        use_percentage_adjustment: bool = True,  # 使用百分比复权
+        use_window_adjustment: bool = False,     # 是否使用窗口调整（默认不使用）
+        default_adjustment_method: str = "forward"  # 默认复权方法: "forward" 或 "backward"
+    ):
+        """
+        初始化期货数据处理器
+        
+        Args:
+            data_path: 数据文件路径，如果提供则在初始化时自动加载
+            auto_detect_rollovers: 是否自动检测切换点
+            auto_clean: 是否自动清洗数据
+            zero_handling_strategy: 零序列处理策略 ("interpolate", "forward_fill", "remove", "mark_only")
+            adjustment_config: 复权配置对象
+            rollover_detector_config: 切换点检测器配置字典
+            silent_mode: 是否启用静默模式
+            use_percentage_adjustment: 是否使用百分比复权（默认True）
+            use_window_adjustment: 是否使用窗口调整（默认False，即使用单点调整）
+            default_adjustment_method: 默认复权方法 "forward"(前复权) 或 "backward"(后复权)
+        """
+        self.data_path = data_path
+        self.auto_detect_rollovers = auto_detect_rollovers
+        self.auto_clean = auto_clean
+        self.zero_handling_strategy = zero_handling_strategy
+        self.silent_mode = silent_mode
+        self.use_percentage_adjustment = use_percentage_adjustment
+        self.use_window_adjustment = use_window_adjustment
+        self.default_adjustment_method = default_adjustment_method
+        
+        # 数据存储
         self.raw_data = None
         self.cleaned_data = None
         self.rollover_points = []
         self.continuous_data = None
-        self.rollover_detector = RolloverDetector(min_volume=100)
-        self.auto_clean = auto_clean
-        self.zero_handling_strategy = zero_handling_strategy
         
-    def load_data_from_csv(self, file_path: str) -> Optional[pd.DataFrame]:
-        """灵活加载数据，尝试多种日期格式"""
-        try:
-            # 读取CSV文件
-            self.raw_data = pd.read_csv(file_path)
-            print(f"原始数据行数: {len(self.raw_data)}")
+        # 配置对象 - 根据参数自动创建或使用传入的配置
+        self.adjustment_config = self._create_adjustment_config(adjustment_config)
+        
+        # 创建切换点检测器
+        detector_config = rollover_detector_config or {
+            'min_volume': 100,
+            'price_change_threshold': 0.5,
+            'window_size_hours': 2.0,
+            'settlement_period_minutes': 15
+        }
+        self.rollover_detector = RolloverDetector(
+            min_volume=detector_config.get('min_volume', 100),
+            price_change_threshold=detector_config.get('price_change_threshold', 0.5),
+            adjustment_config=self.adjustment_config,
+            window_size_hours=detector_config.get('window_size_hours', 2.0),
+            settlement_period_minutes=detector_config.get('settlement_period_minutes', 15)
+        )
+        
+        # 如果提供了数据路径，自动加载数据
+        if data_path:
+            self.load_data_from_csv(data_path)
             
-            # 检查数据列
-            print(f"数据列: {list(self.raw_data.columns)}")
+            # 如果启用了自动清洗，自动清洗数据
+            if auto_clean and self.raw_data is not None:
+                self.process_data_with_zero_handling()
             
-            # 尝试多种日期解析方法
-            datetime_col = self.raw_data['datetime']
-            print(f"datetime列前5个值: {datetime_col.head().tolist()}")
+            # 如果启用了自动检测，自动检测切换点
+            if auto_detect_rollovers and self.cleaned_data is not None:
+                self.detect_rollover_points()
+    
+    def _create_adjustment_config(self, existing_config: Optional[RolloverAdjustmentConfig]) -> RolloverAdjustmentConfig:
+        """根据参数创建或修改调整配置"""
+        if existing_config is not None:
+            # 如果传入了现有配置，根据参数修改它
+            config = existing_config
+        else:
+            # 创建新的配置
+            config = RolloverAdjustmentConfig()
+        
+        # 设置默认策略
+        if self.use_percentage_adjustment:
+            if self.use_window_adjustment:
+                default_strategy = "percentage_window"
+                fallback_strategy = "spread_window"
+            else:
+                default_strategy = "percentage"
+                fallback_strategy = "spread"
+        else:
+            if self.use_window_adjustment:
+                default_strategy = "spread_window"
+                fallback_strategy = "percentage_window"
+            else:
+                default_strategy = "spread"
+                fallback_strategy = "percentage"
+        
+        config.set_global_default(default_strategy)
+        config.set_global_fallback(fallback_strategy)
+        
+        return config
+    
+    def create_continuous_contract(
+        self, 
+        method: Optional[str] = None, 
+        adjustment_type: str = "percentage"
+    ) -> pd.DataFrame:
+        """创建连续合约
+        
+        Args:
+            method: 复权方法 - "forward"(前复权) 或 "backward"(后复权)，如果为None则使用默认方法
+            adjustment_type: 调整类型 - "percentage"(百分比调整) 或 "spread"(价差调整)
+        """
+        # 如果没有指定方法，使用默认方法
+        method_to_use = method or self.default_adjustment_method
+        
+        data_to_use = self.cleaned_data if self.cleaned_data is not None else self.raw_data
+        
+        if data_to_use is None:
+            raise ValueError("请先处理数据")
             
-            # 方法1: 尝试自动推断
-            parsed_dates = pd.to_datetime(datetime_col, errors='coerce')
-            valid_count = parsed_dates.notna().sum()
-            
-            if valid_count == 0:
-                # 方法2: 尝试常见的日期格式
-                print("自动推断失败，尝试常见日期格式...")
-                common_formats = [
-                    '%Y-%m-%d %H:%M:%S',
-                    '%Y/%m/%d %H:%M:%S', 
-                    '%m/%d/%Y %H:%M:%S',
-                    '%d/%m/%Y %H:%M:%S',
-                    '%Y-%m-%d',
-                    '%Y/%m/%d',
-                    '%m/%d/%Y',
-                    '%d/%m/%Y'
-                ]
+        # 只使用有效的切换点
+        valid_rollovers = []
+        for rp in self.rollover_points:
+            is_valid, status = rp.is_strategy_valid()
+            if is_valid:
+                valid_rollovers.append(rp)
+        
+        if not valid_rollovers:
+            self._print("没有有效的合约切换点，无法创建连续合约")
+            # 返回原始数据，但添加必要的调整列
+            continuous_data = data_to_use.copy()
+            continuous_data['close_adj'] = continuous_data['close']
+            continuous_data['cumulative_adjustment'] = 1.0
+            continuous_data['cumulative_gap'] = 0.0
+            self.continuous_data = continuous_data
+            return continuous_data
+
+        continuous_data = data_to_use.copy()
+        sorted_rollovers = sorted(valid_rollovers, key=lambda x: x.rollover_datetime)
+
+        self._print(f"使用 {len(valid_rollovers)} 个有效切换点创建连续合约")
+        self._print(f"复权方法: {'前复权' if method_to_use == 'forward' else '后复权'}")
+        
+        # 调试信息：显示每个切换点的调整参数
+        for i, rollover in enumerate(sorted_rollovers):
+            adjustment = rollover.get_adjustment_factor()
+            gap = rollover.get_price_gap()
+            strategy = rollover.get_applied_strategy_name()
+            self._print(f"切换点 {i+1}: {rollover.old_contract} -> {rollover.new_contract}, "
+                      f"策略: {strategy}, 调整因子: {adjustment:.6f}, 价差: {gap:.6f}")
+
+        if method_to_use == "forward":
+            # 前复权：当前价格不变，调整历史价格
+            if adjustment_type == "percentage":
+                continuous_data = self._forward_percentage_adjustment(continuous_data, sorted_rollovers)
+            else:  # spread
+                continuous_data = self._forward_spread_adjustment(continuous_data, sorted_rollovers)
                 
-                for fmt in common_formats:
-                    try:
-                        temp_dates = pd.to_datetime(datetime_col, format=fmt, errors='coerce')
-                        temp_valid = temp_dates.notna().sum()
-                        if temp_valid > 0:
-                            print(f"  格式 '{fmt}' 成功解析 {temp_valid} 个日期")
-                            parsed_dates = temp_dates
-                            valid_count = temp_valid
-                            break
-                    except:
-                        continue
+        elif method_to_use == "backward":
+            # 后复权：历史价格不变，调整未来价格
+            if adjustment_type == "percentage":
+                continuous_data = self._backward_percentage_adjustment(continuous_data, sorted_rollovers)
+            else:  # spread
+                continuous_data = self._backward_spread_adjustment(continuous_data, sorted_rollovers)
+        
+        else:
+            raise ValueError("method 参数必须是 'forward' 或 'backward'")
+
+        # 确保必要的列存在
+        required_columns = ['close_adj', 'cumulative_adjustment', 'cumulative_gap']
+        for col in required_columns:
+            if col not in continuous_data.columns:
+                self._print(f"警告: 列 '{col}' 未生成，使用默认值")
+                if col == 'close_adj':
+                    continuous_data[col] = continuous_data['close']
+                elif col == 'cumulative_adjustment':
+                    continuous_data[col] = 1.0
+                elif col == 'cumulative_gap':
+                    continuous_data[col] = 0.0
+
+        self.continuous_data = continuous_data
+        self._print(f"{'前复权' if method_to_use == 'forward' else '后复权'}连续合约创建完成")
+        self._print(f"调整类型: {'百分比调整' if adjustment_type == 'percentage' else '价差调整'}")
+        self._print(f"数据形状: {continuous_data.shape}")
+        
+        return continuous_data
+    
+    def get_processor_info(self) -> Dict[str, Any]:
+        """获取处理器信息"""
+        return {
+            "data_path": self.data_path,
+            "auto_detect_rollovers": self.auto_detect_rollovers,
+            "auto_clean": self.auto_clean,
+            "zero_handling_strategy": self.zero_handling_strategy,
+            "silent_mode": self.silent_mode,
+            "use_percentage_adjustment": self.use_percentage_adjustment,
+            "use_window_adjustment": self.use_window_adjustment,
+            "default_adjustment_method": self.default_adjustment_method,
+            "data_loaded": self.raw_data is not None,
+            "data_rows": len(self.raw_data) if self.raw_data is not None else 0,
+            "rollover_points_count": len(self.rollover_points),
+            "continuous_data_created": self.continuous_data is not None,
+            "adjustment_config": {
+                "default_strategy": self.adjustment_config.global_default_strategy,
+                "fallback_strategy": self.adjustment_config.global_fallback_strategy,
+                "available_strategies": self.adjustment_config.get_available_strategies()
+            },
+            "rollover_detector_config": {
+                "min_volume": self.rollover_detector.min_volume,
+                "price_change_threshold": self.rollover_detector.price_change_threshold,
+                "window_size_hours": self.rollover_detector.window_size_hours,
+                "settlement_period_minutes": self.rollover_detector.settlement_period_minutes
+            }
+        }
+    
+    def _print(self, *args, **kwargs):
+        """自定义打印函数，支持静默模式"""
+        if not self.silent_mode:
+            print(*args, **kwargs)
+    
+    def load_data_from_csv(self, file_path: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """加载数据，如果未提供文件路径则使用初始化时的路径"""
+        path_to_use = file_path or self.data_path
+        if not path_to_use:
+            raise ValueError("未提供数据文件路径")
+        
+        # 调用现有的数据加载逻辑
+        # 这里需要将您现有的 load_data_from_csv 方法整合进来
+        try:
+            self.raw_data = pd.read_csv(path_to_use)
+            print(f"数据加载成功: {len(self.raw_data)} 行")
             
-            # 应用解析的日期
-            self.raw_data['datetime'] = parsed_dates
-            
-            # 移除无法解析日期的行
-            original_count = len(self.raw_data)
-            self.raw_data = self.raw_data.dropna(subset=['datetime'])
-            filtered_count = len(self.raw_data)
-            
-            print(f"移除 {original_count - filtered_count} 个无法解析日期的行")
-            print(f"剩余有效数据: {filtered_count} 行")
-            
-            if filtered_count == 0:
-                print("错误: 所有日期都无法解析，请检查数据格式")
-                return None
-            
-            # 确保数值列是数值类型
-            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'amount', 'position']
-            for col in numeric_columns:
-                if col in self.raw_data.columns:
-                    self.raw_data[col] = pd.to_numeric(self.raw_data[col], errors='coerce')
-            
-            # 按时间排序
-            self.raw_data = self.raw_data.sort_values('datetime').reset_index(drop=True)
-            
-            # 数据基本信息
-            print(f"数据加载成功:")
-            print(f"- 时间范围: {self.raw_data['datetime'].min()} 到 {self.raw_data['datetime'].max()}")
-            print(f"- 合约数量: {self.raw_data['symbol'].nunique()}")
-            print(f"- 总数据量: {len(self.raw_data)} 行")
-            
-            # 显示合约列表
-            symbols = self.raw_data['symbol'].unique()
-            print(f"- 包含合约: {list(symbols)}")
+            # 数据预处理
+            self._ensure_data_types()
             
             return self.raw_data
             
         except Exception as e:
             print(f"数据加载失败: {e}")
-            import traceback
-            traceback.print_exc()
             return None
+    
+    def detect_rollover_points(self, data: Optional[pd.DataFrame] = None) -> List[ContractRollover]:
+        """检测合约切换点"""
+        data_to_use = data or self.raw_data
+        if data_to_use is None:
+            raise ValueError("请先加载数据")
+        
+        print("检测合约切换点...")
+        self.rollover_points = self.rollover_detector.detect_rollover_points(data_to_use)
+        
+        valid_count = len([rp for rp in self.rollover_points])
+        print(f"检测完成: 找到 {valid_count} 个有效切换点")
+        
+        return self.rollover_points
+    
+    def set_adjustment_config(self, config: RolloverAdjustmentConfig):
+        """设置复权配置"""
+        self.adjustment_config = config
+    
+    def update_rollover_detector_config(self, **kwargs):
+        """更新切换点检测器配置"""
+        # 重新创建检测器
+        current_config = {
+            'min_volume': self.rollover_detector.min_volume,
+            'price_change_threshold': self.rollover_detector.price_change_threshold,
+            'window_size_hours': self.rollover_detector.window_size_hours,
+            'settlement_period_minutes': self.rollover_detector.settlement_period_minutes
+        }
+        current_config.update(kwargs)
+        
+        self.rollover_detector = RolloverDetector(
+            min_volume=current_config['min_volume'],
+            price_change_threshold=current_config['price_change_threshold'],
+            adjustment_config=self.adjustment_config,
+            window_size_hours=current_config['window_size_hours'],
+            settlement_period_minutes=current_config['settlement_period_minutes']
+        )
     
     def process_data_with_zero_handling(self) -> pd.DataFrame:
         """完整的数据处理流程 - 包含零序列处理"""
@@ -2424,88 +2700,6 @@ class EnhancedFuturesDataProcessor:
                 for severity, count in severity_breakdown.items():
                     print(f"  - {severity}: {count}")
     
-    def create_continuous_contract(self, method: str = "forward", adjustment_type: str = "percentage") -> pd.DataFrame:
-        """创建连续合约
-        
-        Args:
-            method: 复权方法 - "forward"(前复权) 或 "backward"(后复权)
-            adjustment_type: 调整类型 - "percentage"(百分比调整) 或 "spread"(价差调整)
-        
-        Returns:
-            连续合约数据
-        """
-        data_to_use = self.cleaned_data if self.cleaned_data is not None else self.raw_data
-        
-        if data_to_use is None:
-            raise ValueError("请先处理数据")
-            
-        # 只使用有效的切换点
-        valid_rollovers = []
-        for rp in self.rollover_points:
-            is_valid, status = rp.is_strategy_valid()
-            if is_valid:
-                valid_rollovers.append(rp)
-        
-        if not valid_rollovers:
-            print("没有有效的合约切换点，无法创建连续合约")
-            # 返回原始数据，但添加必要的调整列
-            continuous_data = data_to_use.copy()
-            continuous_data['close_adj'] = continuous_data['close']
-            continuous_data['cumulative_adjustment'] = 1.0
-            continuous_data['cumulative_gap'] = 0.0
-            self.continuous_data = continuous_data
-            return continuous_data
-
-        continuous_data = data_to_use.copy()
-        sorted_rollovers = sorted(valid_rollovers, key=lambda x: x.rollover_datetime)
-
-        print(f"使用 {len(valid_rollovers)} 个有效切换点创建连续合约")
-        
-        # 调试信息：显示每个切换点的调整参数
-        for i, rollover in enumerate(sorted_rollovers):
-            adjustment = rollover.get_adjustment_factor()
-            gap = rollover.get_price_gap()
-            strategy = rollover.get_applied_strategy_name()
-            print(f"切换点 {i+1}: {rollover.old_contract} -> {rollover.new_contract}, "
-                f"策略: {strategy}, 调整因子: {adjustment:.6f}, 价差: {gap:.6f}")
-
-        if method == "forward":
-            # 前复权：当前价格不变，调整历史价格
-            if adjustment_type == "percentage":
-                continuous_data = self._forward_percentage_adjustment(continuous_data, sorted_rollovers)
-            else:  # spread
-                continuous_data = self._forward_spread_adjustment(continuous_data, sorted_rollovers)
-                
-        elif method == "backward":
-            # 后复权：历史价格不变，调整未来价格
-            if adjustment_type == "percentage":
-                continuous_data = self._backward_percentage_adjustment(continuous_data, sorted_rollovers)
-            else:  # spread
-                continuous_data = self._backward_spread_adjustment(continuous_data, sorted_rollovers)
-        
-        else:
-            raise ValueError("method 参数必须是 'forward' 或 'backward'")
-
-        # 确保必要的列存在
-        required_columns = ['close_adj', 'cumulative_adjustment', 'cumulative_gap']
-        for col in required_columns:
-            if col not in continuous_data.columns:
-                print(f"警告: 列 '{col}' 未生成，使用默认值")
-                if col == 'close_adj':
-                    continuous_data[col] = continuous_data['close']
-                elif col == 'cumulative_adjustment':
-                    continuous_data[col] = 1.0
-                elif col == 'cumulative_gap':
-                    continuous_data[col] = 0.0
-
-        self.continuous_data = continuous_data
-        print(f"{'前复权' if method == 'forward' else '后复权'}连续合约创建完成")
-        print(f"调整类型: {'百分比调整' if adjustment_type == 'percentage' else '价差调整'}")
-        print(f"数据形状: {continuous_data.shape}")
-        print(f"生成的列: {[col for col in continuous_data.columns if 'adj' in col or 'cumulative' in col]}")
-        
-        return continuous_data
-
     def _forward_percentage_adjustment(self, data: pd.DataFrame, rollovers: List[ContractRollover]) -> pd.DataFrame:
         """前复权 - 百分比调整"""
         data = data.copy()
@@ -2600,13 +2794,13 @@ class EnhancedFuturesDataProcessor:
         
         # 按时间正序处理切换点（从最旧到最新）
         for rollover in rollovers:
-            adjustment_factor = rollover.get_adjustment_factor()
-            price_gap = rollover.get_price_gap()
+            strategy = rollover.get_applied_strategy()
+            adjustment_factor, price_gap = strategy.calculate_adjustment(rollover)
             
             # 调整切换点及之后的所有未来数据
             mask = data['datetime'] >= rollover.rollover_datetime
-            data.loc[mask, 'cumulative_adjustment'] *= adjustment_factor
-            data.loc[mask, 'cumulative_gap'] = data.loc[mask, 'cumulative_gap'] * adjustment_factor + price_gap
+            data.loc[mask, 'cumulative_adjustment'] /= adjustment_factor
+            data.loc[mask, 'cumulative_gap'] = data.loc[mask, 'cumulative_gap'] / adjustment_factor - price_gap
         
         # 应用价格调整
         data['open_adj'] = data['open'] * data['cumulative_adjustment'] + data['cumulative_gap']
@@ -2902,52 +3096,40 @@ def analyze_data_coverage(self, data: pd.DataFrame):
     
     return contract_stats
 
-# 在main函数开始时调用这个调试函数
 def main():
     """主函数示例"""
-    # 先调试数据加载
-    file_path = "data/FG.csv"
-
-    print("=== 数据加载调试 ===")
-    debug_data_loading(file_path)
-    
-    # 然后运行完整流程
-    print("\n" + "="*50)
-    print("完整处理流程")
-    print("="*50)
+    # print("=== 数据加载调试 ===")
+    # debug_data_loading("data/FG.csv")
     
     # 创建处理器
-    processor = EnhancedFuturesDataProcessor(
+    processor = FuturesDataProcessor(
+        data_path="data/FG.csv",
+        auto_detect_rollovers=True,
         auto_clean=True, 
-        zero_handling_strategy="interpolate"
+        zero_handling_strategy="interpolate",
+        default_adjustment_method="backward",
+        use_window_adjustment=True
     )
     
-    # 加载数据
-    data = processor.load_data_from_csv(file_path)
+    # 显示数据清洗结果
+    print("\n处理完成!")
+    if processor.cleaned_data is not None:
+        print(f"处理后数据行数: {len(processor.cleaned_data)}")
     
-    if data is None:
-        print("数据加载失败，程序退出")
-        return
-    
-    # 完整处理流程
-    cleaned_data = processor.process_data_with_zero_handling()
+    if processor.cleaned_data is not None and 'was_zero_corrected' in processor.cleaned_data.columns:
+        corrected_count = processor.cleaned_data['was_zero_corrected'].sum()
+        print(f"修正的零数据点: {corrected_count}")
     
     # 创建连续合约
-    continuous_data = processor.create_continuous_contract("forward")
-    
-    # 显示结果
-    print("\n处理完成!")
-    print(f"原始数据行数: {len(data)}")
-    print(f"处理后数据行数: {len(cleaned_data)}")
-    
-    if 'was_zero_corrected' in cleaned_data.columns:
-        corrected_count = cleaned_data['was_zero_corrected'].sum()
-        print(f"修正的零数据点: {corrected_count}")
+    continuous_data = processor.create_continuous_contract(adjustment_type="percentage")
 
     # 显示前几行结果
-    print("\n前复权结果预览:")
-    cols_to_show = ['datetime', 'symbol', 'close', 'close_adj', 'cumulative_adjustment']
-    print(continuous_data[cols_to_show].head(10))
+    if continuous_data is not None:
+        print("\n前复权结果预览:")
+        cols_to_show = ['datetime', 'symbol', 'close', 'close_adj', 'cumulative_adjustment']
+        print(continuous_data[cols_to_show].head(10))
+    else:
+        print("\n错误: 无法创建连续合约")
     
     print("\n=== 调整后价格范围统计 ===")
     for col in ['open_adj', 'high_adj', 'low_adj', 'close_adj']:
