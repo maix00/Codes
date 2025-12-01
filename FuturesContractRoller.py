@@ -141,7 +141,7 @@ class SpreadAdjustmentStrategy(AdjustmentStrategy):
     
     def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
         # 价差复权几乎总是有效的，除非数据不足
-        if len(rollover.old_prices) == 0 or len(rollover.new_prices) == 0:
+        if len(rollover.old_data) == 0 or len(rollover.new_data) == 0:
             return False, ValidityStatus.INSUFFICIENT_DATA
         return True, ValidityStatus.VALID
     
@@ -156,8 +156,8 @@ class WeightedAverageStrategy(AdjustmentStrategy):
     
     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
         # 基于成交量加权的平均价格计算
-        old_avg = self._calculate_weighted_average(rollover.old_prices)
-        new_avg = self._calculate_weighted_average(rollover.new_prices)
+        old_avg = self._calculate_weighted_average(rollover.old_data)
+        new_avg = self._calculate_weighted_average(rollover.new_data)
         
         if old_avg == 0:
             return 1.0, 0.0
@@ -189,7 +189,7 @@ class WeightedAverageStrategy(AdjustmentStrategy):
         return sum(all_prices) / len(all_prices)
     
     def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
-        if len(rollover.old_prices) == 0 or len(rollover.new_prices) == 0:
+        if len(rollover.old_data) == 0 or len(rollover.new_data) == 0:
             return False, ValidityStatus.INSUFFICIENT_DATA
         return True, ValidityStatus.VALID
     
@@ -439,7 +439,7 @@ class RolloverAdjustmentConfig:
 
 @dataclass
 class ContractRollover:
-    """合约切换事件的数据结构 - 使用DataFrame存储数据"""
+    """合约切换事件的数据结构"""
     
     # 基础信息
     rollover_datetime: datetime  # 切换时间点（新合约开始的时间）
@@ -905,8 +905,8 @@ class ContractRollover:
     #         return self._cached_single_point_prices
             
     #     # 从完整数据中提取价格
-    #     old_price = self._get_price_near_time(self.old_prices, self.rollover_datetime)
-    #     new_price = self._get_price_near_time(self.new_prices, self.rollover_datetime)
+    #     old_price = self._get_price_near_time(self.old_data, self.rollover_datetime)
+    #     new_price = self._get_price_near_time(self.new_data, self.rollover_datetime)
         
     #     self._cached_single_point_prices = (old_price, new_price)
     #     return self._cached_single_point_prices
@@ -930,7 +930,7 @@ class ContractRollover:
     #         return self._cached_negative_check
             
     #     # 从完整数据中提取价格
-    #     all_prices = [price for _, price, _, _ in self.old_prices + self.new_prices]
+    #     all_prices = [price for _, price, _, _ in self.old_data + self.new_data]
     #     self._cached_negative_check = any(price < 0 for price in all_prices)
     #     return self._cached_negative_check
     
@@ -939,8 +939,8 @@ class ContractRollover:
         if self.window_type == "time_based":
             return timedelta(hours=self.window_size_hours)
         else:
-            if len(self.old_prices) > 1:
-                avg_interval = (self.old_prices[-1][0] - self.old_prices[0][0]).total_seconds() / len(self.old_prices)
+            if len(self.old_data) > 1:
+                avg_interval = (self.old_data[-1][0] - self.old_data[0][0]).total_seconds() / len(self.old_data)
                 window_seconds = avg_interval * self.window_size_ticks
                 return timedelta(seconds=window_seconds)
             else:
@@ -999,8 +999,8 @@ class ContractRollover:
             "window_duration_hours": window_duration.total_seconds() / 3600,
             "old_settlement": old_settlement,
             "new_settlement": new_settlement,
-            "old_prices_count": len(self.old_prices),
-            "new_prices_count": len(self.new_prices),
+            "old_data_count": len(self.old_data),
+            "new_data_count": len(self.new_data),
             "settlement_period_minutes": self.settlement_period_minutes,
             "applied_strategy": self.get_applied_strategy_name(),
             "is_custom_strategy": self.custom_strategy is not None
@@ -1141,17 +1141,56 @@ class DirectRolloverReturnCalculator:
 class RolloverDetector:
     """合约切换点检测器"""
     
+    # 定义预期的列结构
+    EXPECTED_COLUMNS = ['datetime', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'position']
+    # 定义必需的列
+    REQUIRED_COLUMNS = ['datetime', 'symbol', 'close']
+    
     def __init__(self, 
-                 min_volume: float = 0, 
-                 price_change_threshold: float = 0.5,
                  adjustment_config: Optional[RolloverAdjustmentConfig] = None,
-                 window_size_hours: float = 2.0,
-                 settlement_period_minutes: int = 15):
-        self.min_volume = min_volume
-        self.price_change_threshold = price_change_threshold  # 价格变化阈值，用于验证切换点
+                 column_mapping: Optional[Dict[str, str]] = None):
+        """
+        初始化RolloverDetector
+        
+        Args:
+            adjustment_config: 复权配置
+            column_mapping: 列名映射字典，用于将输入数据列名映射到期望的列名
+                           例如: {'时间': 'datetime', '合约': 'symbol', '开盘价': 'open'}
+        """
         self.adjustment_config = adjustment_config or RolloverAdjustmentConfig()
-        self.window_size_hours = window_size_hours
-        self.settlement_period_minutes = settlement_period_minutes
+        # 设置列名映射，默认使用标准列名
+        self.column_mapping = column_mapping or {}
+    
+    def _map_input_columns(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        将输入数据的列名映射为标准列名
+        
+        Args:
+            data: 输入数据
+            
+        Returns:
+            列名已标准化的数据
+            
+        Raises:
+            ValueError: 当必需的列不存在时抛出异常
+        """
+        # 只有在需要映射时才创建副本，否则直接返回原数据
+        if not self.column_mapping:
+            mapped_data = data
+        else:
+            mapped_data = data.copy()
+            
+            # 应用列名映射
+            for original_col, expected_col in self.column_mapping.items():
+                if original_col in mapped_data.columns:
+                    mapped_data.rename(columns={original_col: expected_col}, inplace=True)
+        
+        # 检查必需的列是否存在
+        missing_columns = [col for col in self.REQUIRED_COLUMNS if col not in mapped_data.columns]
+        if missing_columns:
+            raise ValueError(f"缺少必需的列: {missing_columns}")
+            
+        return mapped_data
     
     def detect_rollover_points(self, data: pd.DataFrame) -> List[ContractRollover]:
         """检测合约切换点"""
@@ -1165,11 +1204,11 @@ class RolloverDetector:
         data['symbol_change'] = data['symbol'] != data['symbol'].shift(1)
         change_indices = data[data['symbol_change']].index.tolist()
         
-        # 移除第一个点（可能是数据开始）
+        # 移除第一个点（因为是数据开始）
         if change_indices and change_indices[0] == 0:
             change_indices = change_indices[1:]
         
-        print(f"初步检测到 {len(change_indices)} 个合约切换点")
+        print(f"检测到 {len(change_indices)} 个合约切换点")
         print(f"数据时间范围: {data['datetime'].min()} 到 {data['datetime'].max()}")
         
         # 构建切换事件并进行验证
@@ -1184,36 +1223,16 @@ class RolloverDetector:
                 print(f"\n处理切换点 {rollover_time}: {old_contract} -> {new_contract}")
                 
                 # 构建价格窗口数据
-                old_prices = self._get_price_window(data, old_contract, rollover_time, is_old=True)
-                new_prices = self._get_price_window(data, new_contract, rollover_time, is_old=False)
-                
-                # 如果数据不足，尝试扩大窗口
-                if len(old_prices) < 3:
-                    print(f"  旧合约数据不足，尝试扩大窗口...")
-                    # 扩大窗口到4小时
-                    self.window_size_hours = 4.0
-                    old_prices = self._get_price_window(data, old_contract, rollover_time, is_old=True)
-                    # 恢复原窗口大小
-                    self.window_size_hours = 2.0
-                
-                if len(new_prices) < 3:
-                    print(f"  新合约数据不足，尝试扩大窗口...")
-                    # 扩大窗口到4小时
-                    self.window_size_hours = 4.0
-                    new_prices = self._get_price_window(data, new_contract, rollover_time, is_old=False)
-                    # 恢复原窗口大小
-                    self.window_size_hours = 2.0
+                old_data = self._get_window_data(data, old_contract, rollover_time, is_old=True)
+                new_data = self._get_window_data(data, new_contract, rollover_time, is_old=False)
                 
                 # 创建切换事件
                 rollover = ContractRollover(
                     rollover_datetime=rollover_time,
                     old_contract=old_contract,
                     new_contract=new_contract,
-                    old_prices=old_prices,  # 现在是包含完整数据的列表
-                    new_prices=new_prices,  # 现在是包含完整数据的列表
-                    window_type="time_based",
-                    window_size_hours=self.window_size_hours,
-                    settlement_period_minutes=self.settlement_period_minutes,
+                    old_data=old_data,
+                    new_data=new_data,
                     adjustment_config=self.adjustment_config
                 )
                 
@@ -1222,9 +1241,9 @@ class RolloverDetector:
                 
                 if is_valid:
                     rollover_points.append(rollover)
-                    print(f"✓ 有效切换点 {rollover.rollover_datetime}: {rollover.old_contract} -> {rollover.new_contract}")
                 else:
-                    print(f"✗ 可疑切换点 {rollover.rollover_datetime}: {rollover.old_contract} -> {rollover.new_contract} - 跳过")
+                    # 直接报错
+                    raise ValueError(f"切换点 {rollover.rollover_datetime} 无效")
                     
             except Exception as e:
                 print(f"处理切换点 {idx} 时出错: {e}")
@@ -1232,201 +1251,72 @@ class RolloverDetector:
                 traceback.print_exc()
                 continue
         
-        print(f"\n最终有效切换点: {len(rollover_points)}/{len(change_indices)}")
+        print(f"\n有效切换点: {len(rollover_points)}/{len(change_indices)}")
         
         return rollover_points
-    
-    def detect_futures_rollovers(self, data: pd.DataFrame) -> List[ContractRollover]:
-        """专门针对期货合约的切换点检测"""
-        
-        data_sorted = data.sort_values('datetime')
-        data_sorted['contract_change'] = data_sorted['symbol'] != data_sorted['symbol'].shift(1)
-        change_points = data_sorted[data_sorted['contract_change']]
-        
-        print(f"找到 {len(change_points)} 个合约变化点")
-        
-        rollover_events = []
-        
-        for idx, change_row in change_points.iterrows():
-            try:
-                change_time = change_row['datetime']
-                new_contract = change_row['symbol']
-                
-                # 找到前一个合约
-                prev_data = data_sorted[data_sorted['datetime'] < change_time]
-                if len(prev_data) == 0:
-                    continue
-                    
-                old_contract = prev_data.iloc[-1]['symbol']
-                
-                print(f"\n处理切换: {old_contract} -> {new_contract} 在 {change_time}")
-                
-                # 获取价格数据
-                old_prices, previous_day_end = self._get_futures_settlement_price(data, old_contract, change_time)
-                new_prices, current_day_start = self._get_futures_opening_price(data, new_contract, change_time)
-                
-                # 创建切换事件
-                rollover = ContractRollover(
-                    rollover_datetime=change_time,
-                    old_contract=old_contract,
-                    new_contract=new_contract,
-                    previous_day_end=previous_day_end,
-                    current_day_start=current_day_start,
-                    old_prices=old_prices,
-                    new_prices=new_prices,
-                    window_type="time_based",
-                    window_size_hours=self.window_size_hours,
-                    settlement_period_minutes=self.settlement_period_minutes,
-                    adjustment_config=self.adjustment_config
-                )
-                
-                rollover_events.append(rollover)
-                print(f"✓ 创建切换事件: 旧合约结束于 {previous_day_end}, 新合约开始于 {current_day_start}")
-                
-            except Exception as e:
-                print(f"处理切换点时出错: {e}")
-                continue
-        
-        return rollover_events
-
-    def _get_futures_settlement_price(self, data: pd.DataFrame, contract: str, rollover_time: datetime) -> Tuple[List[Tuple[datetime, float, float, float]], Optional[datetime]]:
-        """获取期货合约的结算价数据并返回最后一个数据点时间"""
-        contract_data = data[data['symbol'] == contract]
-        
-        # 找切换时间前最后一个交易日
-        previous_data = contract_data[contract_data['datetime'] < rollover_time]
-        if len(previous_data) == 0:
-            return [], None
-        
-        last_trading_day = previous_data['datetime'].max().date()
-        last_day_data = contract_data[contract_data['datetime'].dt.date == last_trading_day]
-        
-        if len(last_day_data) == 0:
-            return [], None
-        
-        # 获取最后一个数据点时间
-        previous_day_end = last_day_data['datetime'].max()
-        
-        # 取最后2小时的数据作为窗口
-        window_start = previous_day_end - timedelta(hours=2)
-        window_data = last_day_data[last_day_data['datetime'] >= window_start]
-        
-        # 返回完整数据
-        result = []
-        for _, row in window_data.iterrows():
-            close = row['close'] if pd.notna(row['close']) else 0.0
-            volume = row['volume'] if 'volume' in row and pd.notna(row['volume']) else 0.0
-            position = row['position'] if 'position' in row and pd.notna(row['position']) else 0.0
-            
-            result.append((row['datetime'], close, volume, position))
-        
-        print(f"  旧合约 {contract}: 最后交易日 {last_trading_day}, 结束时间 {previous_day_end}, {len(result)}个数据点")
-        return result, previous_day_end
-
-    def _get_futures_opening_price(self, data: pd.DataFrame, contract: str, rollover_time: datetime) -> Tuple[List[Tuple[datetime, float, float, float]], Optional[datetime]]:
-        """获取期货合约的开盘价数据并返回第一个数据点时间"""
-        contract_data = data[data['symbol'] == contract]
-        
-        # 找切换时间当天的数据
-        current_day_data = contract_data[contract_data['datetime'].dt.date == rollover_time.date()]
-        
-        if len(current_day_data) == 0:
-            # 如果当天没有数据，找之后第一个交易日
-            future_data = contract_data[contract_data['datetime'] > rollover_time]
-            if len(future_data) == 0:
-                return [], None
-            first_trading_day = future_data['datetime'].min().date()
-            current_day_data = contract_data[contract_data['datetime'].dt.date == first_trading_day]
-        
-        if len(current_day_data) == 0:
-            return [], None
-        
-        # 获取第一个数据点时间
-        current_day_start = current_day_data['datetime'].min()
-        
-        # 取前2小时的数据作为窗口
-        window_end = current_day_start + timedelta(hours=2)
-        window_data = current_day_data[current_day_data['datetime'] <= window_end]
-        
-        # 返回完整数据
-        result = []
-        for _, row in window_data.iterrows():
-            close = row['close'] if pd.notna(row['close']) else 0.0
-            volume = row['volume'] if 'volume' in row and pd.notna(row['volume']) else 0.0
-            position = row['position'] if 'position' in row and pd.notna(row['position']) else 0.0
-            
-            result.append((row['datetime'], close, volume, position))
-        
-        print(f"  新合约 {contract}: 开始时间 {current_day_start}, {len(result)}个数据点")
-        return result, current_day_start
 
     # 在 RolloverDetector 中修改数据获取
-    def _get_price_window(self, data: pd.DataFrame, contract: str, rollover_time: datetime, is_old: bool) -> List[Tuple[datetime, float, float, float]]:
+    def _get_window_data(self, data: pd.DataFrame, contract: str, rollover_time: datetime, is_old: bool) -> pd.DataFrame:
         """
-        获取切换点附近的完整交易数据 - 修正版本
+        获取切换点附近的完整交易数据
         
         Returns:
-            List of (datetime, close, volume, position)
+            pd.DataFrame: 包含指定合约数据的DataFrame
         """
-        # 筛选指定合约的数据
-        contract_data = data[data['symbol'] == contract].copy()
+        if data.empty:
+            print(f"  警告: 数据为空")
+            return pd.DataFrame()
         
-        if len(contract_data) == 0:
-            print(f"  警告: 合约 {contract} 在数据中不存在")
-            return []
+        # 首先找到rollover_time所在的行索引
+        exact_match = data[data['datetime'] == rollover_time]
+        if not exact_match.empty:
+            rollover_index = exact_match.index[0]
+        else:
+            rollover_index = 0
         
         if is_old:
-            # 旧合约：获取切换时间前一天的数据
-            previous_day = rollover_time - timedelta(days=1)
-            previous_day_start = datetime(previous_day.year, previous_day.month, previous_day.day, 0, 0, 0)
-            previous_day_end = datetime(previous_day.year, previous_day.month, previous_day.day, 23, 59, 59)
-            
-            window_data = contract_data[
-                (contract_data['datetime'] >= previous_day_start) & 
-                (contract_data['datetime'] <= previous_day_end)
-            ]
-            
-            print(f"  旧合约 {contract}: 前一天 {previous_day.date()} 的数据")
-            print(f"  时间范围 {previous_day_start} 到 {previous_day_end}")
-            print(f"  找到 {len(window_data)} 个数据点")
-            
-            # 如果前一天没有数据，尝试往前找
-            if len(window_data) == 0:
-                print(f"  前一天无数据，尝试寻找最近的数据...")
-                # 找切换时间之前最近的几个交易日的数据
-                window_data = contract_data[contract_data['datetime'] < rollover_time].tail(100)  # 取最近100个点
+            # 旧合约：从rollover_time向上寻找，直到symbol不再是旧合约为止
+            # 先确认rollover_index位置确实是旧合约
+            if rollover_index > 0 and data.loc[rollover_index - 1, 'symbol'] == contract:
+                # 向上遍历找到旧合约的起始位置
+                start_index = rollover_index - 1
+                while start_index >= 0 and data.loc[start_index, 'symbol'] == contract:
+                    start_index -= 1
+                start_index += 1  # 回到第一个匹配的索引
+                
+                # 从起始位置到rollover_index-1就是我们要的旧合约数据
+                # 使用视图而非副本以节省内存
+                window_data = data.iloc[start_index:rollover_index]
+            else:
+                # 如果rollover_index前一个不是旧合约，则旧合约数据为空
+                window_data = pd.DataFrame()
             
         else:
-            # 新合约：取切换时间当天的数据
-            current_day_start = datetime(rollover_time.year, rollover_time.month, rollover_time.day, 0, 0, 0)
-            current_day_end = datetime(rollover_time.year, rollover_time.month, rollover_time.day, 23, 59, 59)
-            
-            window_data = contract_data[
-                (contract_data['datetime'] >= current_day_start) & 
-                (contract_data['datetime'] <= current_day_end)
-            ]
-            
-            print(f"  新合约 {contract}: 当天 {rollover_time.date()} 的数据")
-            print(f"  时间范围 {current_day_start} 到 {current_day_end}")
-            print(f"  找到 {len(window_data)} 个数据点")
-            
-            # 如果当天没有数据，尝试往后找
-            if len(window_data) == 0:
-                print(f"  当天无数据，尝试寻找后续的数据...")
-                # 找切换时间之后最近的数据
-                window_data = contract_data[contract_data['datetime'] > rollover_time].head(100)  # 取最近100个点
+            # 新合约：从rollover_time(含该时间)向下寻找，直到symbol不再是新合约为止
+            # 确认rollover_index位置是新合约
+            if rollover_index < len(data) and data.loc[rollover_index, 'symbol'] == contract:
+                # 向下遍历找到新合约的结束位置
+                end_index = rollover_index
+                while end_index < len(data) and data.loc[end_index, 'symbol'] == contract:
+                    end_index += 1
+                
+                # 从rollover_index到结束位置就是我们要的新合约数据
+                # 使用视图而非副本以节省内存
+                window_data = data.iloc[rollover_index:end_index]
+            else:
+                # 如果rollover_index处不是新合约，则新合约数据为空
+                window_data = pd.DataFrame()
         
-        # 返回完整数据 (时间, 收盘价, 成交量, 持仓量)
-        result = []
-        for _, row in window_data.iterrows():
-            close = row['close'] if pd.notna(row['close']) else 0.0
-            volume = row['volume'] if 'volume' in row and pd.notna(row['volume']) else 0.0
-            position = row['position'] if 'position' in row and pd.notna(row['position']) else 0.0
-            
-            result.append((row['datetime'], close, volume, position))
-        
-        print(f"  最终获取: {contract} {len(result)}个数据点")
-        return result
+        # 确保返回的是DataFrame格式
+        if not window_data.empty:
+            # 不再创建副本，直接返回切片视图以节省内存
+            result_df = window_data
+
+        else:
+            # 返回空的DataFrame，但包含预期的列结构
+            result_df = pd.DataFrame(columns=self.EXPECTED_COLUMNS)
+
+        return result_df
     
     def _validate_rollover(self, rollover: ContractRollover, data: pd.DataFrame, change_index: int) -> bool:
         """
@@ -1440,43 +1330,10 @@ class RolloverDetector:
         Returns:
             是否有效
         """
-        # 1. 检查数据量是否足够（对于日内数据，有几个点就够）
-        if len(rollover.old_prices) == 0 or len(rollover.new_prices) == 0:
-            print(f"  数据完全缺失: 旧合约{len(rollover.old_prices)}个点, 新合约{len(rollover.new_prices)}个点")
-            return False
-        
-        # 2. 对于期货合约切换，价格可能会有较大跳空，这是正常的
-        try:
-            # 获取切换前后的价格
-            old_row = data.iloc[change_index - 1]
-            new_row = data.iloc[change_index]
-            
-            price_change = abs(new_row['close'] - old_row['close']) / old_row['close'] if old_row['close'] > 0 else float('inf')
-            
-            # 放宽价格变化阈值到200%，因为期货合约切换可能有较大价差
-            if price_change > 2.0:  # 200%
-                print(f"  价格跳空较大: {price_change:.2%}，但期货切换可能正常")
-                # 不因为价格跳空而拒绝，只是警告
-            
-        except Exception as e:
-            print(f"  价格连续性检查失败: {e}")
-            # 不因为检查失败而拒绝
-        
-        # 3. 检查策略有效性
-        try:
-            is_valid, status = rollover.is_strategy_valid()
-            if not is_valid:
-                print(f"  策略状态: {status.value}")
-                # 即使策略无效也接受，使用默认策略
-        except Exception as e:
-            print(f"  策略验证失败: {e}")
-        
-        # 主要检查是否有基本数据
-        if len(rollover.old_prices) >= 1 and len(rollover.new_prices) >= 1:
-            print(f"  ✓ 基本数据满足: 旧合约{len(rollover.old_prices)}点, 新合约{len(rollover.new_prices)}点")
+        # 检查是否有基本数据
+        if len(rollover.old_data) >= 1 and len(rollover.new_data) >= 1:
             return True
         else:
-            print(f"  ✗ 基本数据不足")
             return False
     
     def analyze_rollover_events(self, rollover_events: List[ContractRollover]) -> pd.DataFrame:
@@ -1515,85 +1372,14 @@ class RolloverDetector:
                 'price_gap': gap,
                 'is_valid': is_valid,
                 'validity_status': status.value,
-                'old_prices_count': len(event.old_prices),
-                'new_prices_count': len(event.new_prices),
+                'old_data_count': len(event.old_data),
+                'new_data_count': len(event.new_data),
                 'old_settlement': window_info['old_settlement'],
                 'new_settlement': window_info['new_settlement'],
                 'has_negative_prices': event.has_negative_prices()
             })
         
         return pd.DataFrame(analysis_data)
-    
-    def detect_with_advanced_validation(self, data: pd.DataFrame, 
-                                      volume_threshold: float = 1000,
-                                      gap_threshold: float = 0.1) -> List[ContractRollover]:
-        """
-        使用高级验证检测切换点
-        
-        Args:
-            data: 价格数据
-            volume_threshold: 成交量阈值
-            gap_threshold: 价格差距阈值
-            
-        Returns:
-            验证通过的切换事件列表
-        """
-        # 基础检测
-        # basic_rollovers = self.detect_rollover_points(data)
-        basic_rollovers = self.detect_futures_rollovers(data)
-        
-        # 高级验证
-        validated_rollovers = []
-        for rollover in basic_rollovers:
-            if self._advanced_validation(rollover, data, volume_threshold, gap_threshold):
-                validated_rollovers.append(rollover)
-        
-        print(f"高级验证后剩余切换点: {len(validated_rollovers)}/{len(basic_rollovers)}")
-        return validated_rollovers
-    
-    def _advanced_validation(self, rollover: ContractRollover, data: pd.DataFrame,
-                           volume_threshold: float, gap_threshold: float) -> bool:
-        """高级验证逻辑"""
-        # 1. 检查价格稳定性
-        # rollover.old_prices 和 rollover.new_prices 中的每一项为 (datetime, price, volume, position)
-        old_prices = [price for _, price, _, _ in rollover.old_prices]
-        new_prices = [price for _, price, _, _ in rollover.new_prices]
-        
-        if len(old_prices) > 1 and len(new_prices) > 1:
-            old_volatility = np.std(old_prices) / np.mean(old_prices) if np.mean(old_prices) > 0 else float('inf')
-            new_volatility = np.std(new_prices) / np.mean(new_prices) if np.mean(new_prices) > 0 else float('inf')
-            
-            if old_volatility > 0.1 or new_volatility > 0.1:  # 10% 波动率阈值
-                print(f"  价格波动过大: 旧合约{old_volatility:.2%}, 新合约{new_volatility:.2%}")
-                return False
-        
-        # 2. 检查成交量（如果可用）
-        if 'volume' in data.columns:
-            # 获取切换点附近的成交量
-            rollover_time = rollover.rollover_datetime
-            time_window = timedelta(hours=1)
-            
-            old_volume_data = data[
-                (data['symbol'] == rollover.old_contract) & 
-                (data['datetime'] >= rollover_time - time_window) & 
-                (data['datetime'] <= rollover_time)
-            ]
-            
-            new_volume_data = data[
-                (data['symbol'] == rollover.new_contract) & 
-                (data['datetime'] >= rollover_time) & 
-                (data['datetime'] <= rollover_time + time_window)
-            ]
-            
-            if len(old_volume_data) > 0 and len(new_volume_data) > 0:
-                old_avg_volume = old_volume_data['volume'].mean()
-                new_avg_volume = new_volume_data['volume'].mean()
-                
-                if old_avg_volume < volume_threshold or new_avg_volume < volume_threshold:
-                    print(f"  平均成交量不足: 旧合约{old_avg_volume:.0f}, 新合约{new_avg_volume:.0f}")
-                    return False
-        
-        return True
 
 class DataQualityChecker:
     """数据质量检查器 - 考虑合约切换点"""
