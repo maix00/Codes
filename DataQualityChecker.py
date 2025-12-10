@@ -1,18 +1,18 @@
 import pandas as pd
 import numpy as np
 from datetime import timedelta
-from typing import List, Optional, Dict, Callable, Tuple
+from typing import Any, List, Optional, Dict, Callable, Tuple
 from enum import Enum
 
 class DataIssueLabel(Enum):
-    # MISSING_VALUES = "Missing Values"
+    MISSING_VALUES = "Missing Values"
     ZERO_SEQUENCE_LONG = "Zero Sequence Long"
     ZERO_SEQUENCE_SHORT = "Zero Sequence Short"
     ZERO_SEQUENCE_ALL = "Zero Sequence All"
     ZERO_SEQUENCE_AT_START = "Zero Sequence at Start"
     ZERO_SEQUENCE_AT_VERY_START = "Zero Sequence at Very Start"
     ZERO_SEQUENCE_AT_END = "Zero Sequence at End"
-    OUTLIERS = "Outliers"
+    OUTLIERS_MAD = "Outliers MAD"
     # DUPLICATE_ENTRIES = "Duplicate Entries"
 
 class DataIssueSolution(Enum):
@@ -25,6 +25,7 @@ class DataIssueSolution(Enum):
     LINEAR_INTERPOLATION = "Linear Interpolation"
     
     # Outliers solutions
+    OUTLIERS_MED_CLIP = "Clip to Median"
     OUTLIERS_MEDIAN = "Replace with Median"
     OUTLIERS_MEAN = "Replace with Mean"
     OUTLIERS_DROP = "Drop Rows"
@@ -39,10 +40,14 @@ class DataQualityChecker:
     数据质量检查器类，用于处理带有symbol字段的DataFrame数据。
     如果存在symbol字段，将对同一symbol的连续数据段分别处理。
     """
+
+    EXPECTED_COLUMNS = ['symbol', 'time']
     
     def __init__(self, df: Optional[pd.DataFrame] = None, window_size_multiple: float = 3.0, 
                  columns: Optional[List[str]] = None,
-                 print_info: bool = False):
+                 print_info: bool = False,
+                 label: str = 'futures',
+                 column_mapping: Optional[Dict[str, str]] = None):
         """
         初始化数据质量检查器
         
@@ -51,36 +56,49 @@ class DataQualityChecker:
             window_size_multiple (float): 窗口大小倍数，用于判断零值序列是否过长，默认值为3.0
             columns (Optional[List[str]]): 要处理的列名列表，默认为None（处理所有列）
             print_info (bool): 是否打印信息，默认为False
+            label (str): 数据标签，默认为'futures'
         """
         if df is None:
             raise ValueError("Input DataFrame cannot be None.")
-        self.df = df  # 存储DataFrame
+        self.df = df  # 存储DataFrames
         self.window_size_multiple = window_size_multiple
         self.columns = columns
+        self.label = label
 
         self.issues_df: pd.DataFrame = pd.DataFrame(
             columns=['SYMBOL', 'SYMBOL_GROUP_ID', 'COLUMN', 'START_ROW', 'START_TIME', 'END_ROW', 'END_TIME', 
                      'ISSUE_LABEL', 'SOLUTION_LABEL', 'DETAILS'])  # 记录问题的DataFrame
 
-        self.has_datetime = 'datetime' in df.columns
-        self.has_date = 'date' in df.columns
-        self.has_symbol = 'symbol' in df.columns
-        self.time_col = 'datetime' if self.has_datetime else 'date' if self.has_date else None
+        self.symbol_col = 'symbol' if 'symbol' in df.columns else (column_mapping['symbol'] if column_mapping and 'symbol' in column_mapping else None)
+        
+        time_candidates = ['time', 'day', 'date']
+        self.time_col = None
+        for col in time_candidates:
+            matches = [c for c in df.columns if col.lower() in c.lower()]
+            if matches:
+                self.time_col = matches[0]
+            break
+        self.time_col = column_mapping['time'] if column_mapping and 'time' in column_mapping else self.time_col
+        
         self.min_time_interval = self._calculate_min_time_interval(df)
         if self.min_time_interval:
             self.window_size_seconds = self.min_time_interval.total_seconds() * self.window_size_multiple
         else:
             self.window_size_seconds = None
         
-        self.solution_handlers: Dict[DataIssueSolution, Callable[[pd.DataFrame, int, int, str], pd.DataFrame]] = {
-            DataIssueSolution.DROP_ROWS: lambda df, start_row, end_row, _: df.drop(df.index[start_row:end_row+1]).reset_index(drop=True),
-            DataIssueSolution.LINEAR_INTERPOLATION: lambda df, start_idx, end_idx, col: (
+        self.solution_handlers: Dict[DataIssueSolution, Callable[[pd.DataFrame, int, int, str, Optional[Dict[str, Any]]], pd.DataFrame]] = {
+            DataIssueSolution.NO_ACTION: lambda df, start_idx, end_idx, col, issue=None: df,
+            DataIssueSolution.ERROR: lambda df, start_idx, end_idx, col, issue: (
+                (_ for _ in ()).throw(ValueError(f"Data quality error in column '{col}': {issue['ISSUE_LABEL'].name} - {issue['DETAILS']}")) if issue else df
+            ),
+            DataIssueSolution.DROP_ROWS: lambda df, start_row, end_row, _, issue=None: df.drop(df.index[start_row:end_row+1]).reset_index(drop=True),
+            DataIssueSolution.LINEAR_INTERPOLATION: lambda df, start_idx, end_idx, col, issue=None: (
                 df.assign(**{col: df[col].mask(df.index.isin(range(start_idx, end_idx+1))).interpolate(method='linear')})),
-            DataIssueSolution.FORWARD_FILL: lambda df, start_idx, end_idx, col: (
+            DataIssueSolution.FORWARD_FILL: lambda df, start_idx, end_idx, col, issue=None: (
                 df.assign(**{col: df[col].mask(df.index.isin(range(start_idx, end_idx+1))).ffill()})),
-            DataIssueSolution.BACKWARD_FILL: lambda df, start_idx, end_idx, col: (
+            DataIssueSolution.BACKWARD_FILL: lambda df, start_idx, end_idx, col, issue=None: (
                 df.assign(**{col: df[col].mask(df.index.isin(range(start_idx, end_idx+1))).bfill()})),
-            DataIssueSolution.OUTLIERS_MEDIAN: lambda df, start_idx, end_idx, col: (
+            DataIssueSolution.OUTLIERS_MEDIAN: lambda df, start_idx, end_idx, col, issue=None: (
             df.assign(**{col: df[col].mask((df[col] < (df[col].quantile(0.25) - 1.5 * (df[col].quantile(0.75) - df[col].quantile(0.25)))) | 
                 (df[col] > (df[col].quantile(0.75) + 1.5 * (df[col].quantile(0.75) - df[col].quantile(0.25)))),
                 df[col].median())})
@@ -95,8 +113,9 @@ class DataQualityChecker:
                 pass
 
         # 如果DataFrame中没有symbol列，则添加一个默认的symbol列用于后续分组处理
-        if not self.has_symbol:
+        if not self.symbol_col:
             self.df['symbol'] = '[SYMBOL]'
+            self.symbol_col = 'symbol'
 
         # 先按时间排序
         if self.time_col:
@@ -108,7 +127,7 @@ class DataQualityChecker:
         # 如果_group_id列已存在，将其重命名
         if '_group_id' in self.df.columns:
             self.df = self.df.rename(columns={'_group_id': '_group_id_original'})
-        self.df['_group_id'] = (self.df['symbol'] != self.df['symbol'].shift()).cumsum()
+        self.df['_group_id'] = (self.df[self.symbol_col] != self.df[self.symbol_col].shift()).cumsum()
 
         for _, group_data in self.df.groupby('_group_id'):
             # 对每组数据应用_check_segment
@@ -131,13 +150,14 @@ class DataQualityChecker:
         子类可以重写此方法以自定义分配逻辑
         """
         solution_mapping = {
-            DataIssueLabel.ZERO_SEQUENCE_LONG: DataIssueSolution.DROP_ROWS,
+            DataIssueLabel.MISSING_VALUES: DataIssueSolution.NO_ACTION,
+            DataIssueLabel.ZERO_SEQUENCE_LONG: DataIssueSolution.LINEAR_INTERPOLATION,
             DataIssueLabel.ZERO_SEQUENCE_SHORT: DataIssueSolution.LINEAR_INTERPOLATION,
             DataIssueLabel.ZERO_SEQUENCE_ALL: DataIssueSolution.ERROR,
             DataIssueLabel.ZERO_SEQUENCE_AT_START: DataIssueSolution.ERROR,
             DataIssueLabel.ZERO_SEQUENCE_AT_VERY_START: DataIssueSolution.DROP_ROWS,
             DataIssueLabel.ZERO_SEQUENCE_AT_END: DataIssueSolution.ERROR,
-            DataIssueLabel.OUTLIERS: DataIssueSolution.OUTLIERS_MEDIAN,
+            DataIssueLabel.OUTLIERS_MAD: DataIssueSolution.OUTLIERS_MEDIAN,
         }
         
         self.issues_df['SOLUTION_LABEL'] = self.issues_df['ISSUE_LABEL'].map(solution_mapping)
@@ -235,13 +255,13 @@ class DataQualityChecker:
             for _, issue in filtered_issues.iterrows():
                 solution = issue['SOLUTION_LABEL']
                 if solution in self.solution_handlers:
-                    df = self.solution_handlers[solution](df, issue['START_ROW'], issue['END_ROW'], issue['COLUMN'])
+                    df = self.solution_handlers[solution](df, issue['START_ROW'], issue['END_ROW'], issue['COLUMN'], issue.to_dict())
             if df is not None and not df.empty:
                 processed_groups.append(df)
         
         # 删除辅助列
         self.df = self.df.drop('_group_id', axis=1)
-        if not self.has_symbol:
+        if self.symbol_col == '[SYMBOL]':
             self.df = self.df.drop('symbol', axis=1)
         
         # 将所有处理完的数据拼接返回
@@ -252,7 +272,7 @@ class DataQualityChecker:
         
         return self.processed_df
         
-    def add_solution_handler(self, solution: DataIssueSolution, handler: Callable[[pd.DataFrame, int, int, str], pd.DataFrame]) -> None:
+    def add_solution_handler(self, solution: DataIssueSolution, handler: Callable[[pd.DataFrame, int, int, str, Optional[Dict[str, Any]]], pd.DataFrame]) -> None:
         """
         增加或修改solution_handlers中的处理函数
         
@@ -282,7 +302,7 @@ class DataQualityChecker:
             
             for start_idx, end_idx in zero_sequences:
                 sequence_length = end_idx - start_idx + 1
-                symbol_value = df.iloc[start_idx]['symbol'] if 'symbol' in df.columns else None
+                symbol_value = df.iloc[start_idx][self.symbol_col] if self.symbol_col else None
                 symbol_group_id = df.iloc[start_idx]['_group_id'] if '_group_id' in df.columns else None
                 time_span_seconds = self._calculate_time_span(df, start_idx, end_idx)
                 start_time = df.iloc[start_idx][self.time_col] if self.time_col else None
@@ -325,33 +345,35 @@ class DataQualityChecker:
                     'ISSUE_LABEL': [issue_label],
                     'DETAILS': [details]
                 })
-                self.issues_df = pd.concat([self.issues_df, new_issue], ignore_index=True)
-            
-            # 检测缺失值并记录
-            if self.time_col and self.min_time_interval:
-                missing_sequences = self._detect_missing_sequences(df, col)
-                
-                for start_idx, end_idx in missing_sequences:
-                    symbol_value = df.iloc[start_idx]['symbol'] if 'symbol' in df.columns else None
-                    symbol_group_id = df.iloc[start_idx]['_group_id'] if '_group_id' in df.columns else None
-                    start_time = df.iloc[start_idx][self.time_col]
-                    end_time = df.iloc[end_idx][self.time_col]
-                    expected_count = int((end_time - start_time) / self.min_time_interval) + 1
-                    actual_count = end_idx - start_idx + 1
-                    missing_count = expected_count - actual_count
-                    
-                    new_issue = pd.DataFrame({
-                        'SYMBOL': [symbol_value],
-                        'SYMBOL_GROUP_ID': [symbol_group_id],
-                        'COLUMN': [col],
-                        'START_ROW': [start_idx],
-                        'START_TIME': [start_time],
-                        'END_ROW': [end_idx],
-                        'END_TIME': [end_time],
-                        'ISSUE_LABEL': ['Missing Values'],
-                        'DETAILS': [f"缺失 {missing_count} 行数据"]
-                    })
+                # Only concatenate if new_issue is not empty and not all-NA
+                if not new_issue.empty and not new_issue.isna().all(axis=None):
                     self.issues_df = pd.concat([self.issues_df, new_issue], ignore_index=True)
+            
+        # 检测缺失值并记录
+        if self.time_col and self.min_time_interval:
+            missing_sequences = self._detect_missing_sequences(df)
+            
+            for start_idx, end_idx in missing_sequences:
+                symbol_value = df.iloc[start_idx][self.symbol_col] if self.symbol_col else None
+                symbol_group_id = df.iloc[start_idx]['_group_id'] if '_group_id' in df.columns else None
+                start_time = df.iloc[start_idx][self.time_col]
+                end_time = df.iloc[end_idx][self.time_col]
+                expected_count = int((end_time - start_time) / self.min_time_interval) + 1
+                actual_count = end_idx - start_idx + 1
+                missing_count = expected_count - actual_count
+                
+                new_issue = pd.DataFrame({
+                    'SYMBOL': [symbol_value],
+                    'SYMBOL_GROUP_ID': [symbol_group_id],
+                    'COLUMN': [None],
+                    'START_ROW': [start_idx],
+                    'START_TIME': [start_time],
+                    'END_ROW': [end_idx],
+                    'END_TIME': [end_time],
+                    'ISSUE_LABEL': [DataIssueLabel.MISSING_VALUES],
+                    'DETAILS': [f"缺失 {missing_count} 行数据"]
+                })
+                self.issues_df = pd.concat([self.issues_df, new_issue], ignore_index=True)
 
             # 检测异常值并记录
             # outlier_mask = (df[col] < (df[col].quantile(0.25) - 1.5 * (df[col].quantile(0.75) - df[col].quantile(0.25)))) | \
@@ -361,7 +383,7 @@ class DataQualityChecker:
             #     outlier_indices = df[outlier_mask].index.tolist()
             #     for idx in outlier_indices:
             #         new_issue = pd.DataFrame({
-            #             'SYMBOL': [df.iloc[idx]['symbol'] if 'symbol' in df.columns else None],
+            #             'SYMBOL': [df.iloc[idx][self.symbol_col] if self.symbol_col else None],
             #             'SYMBOL_GROUP_ID': [df.iloc[idx]['_group_id'] if '_group_id' in df.columns else None],
             #             'COLUMN': [col],
             #             'START_ROW': [idx],
@@ -375,7 +397,7 @@ class DataQualityChecker:
         
         return self.issues_df
     
-    def _detect_missing_sequences(self, df: pd.DataFrame, col: str) -> List[Tuple[int, int]]:
+    def _detect_missing_sequences(self, df: pd.DataFrame) -> List[Tuple[int, int]]:
         """
         根据时间间隔检测缺失数据序列
         
@@ -391,13 +413,49 @@ class DataQualityChecker:
         if not self.time_col or not self.min_time_interval:
             return missing_sequences
         
+        # 向量化计算时间间隔，提高速度
+        time_series = pd.to_datetime(df[self.time_col])
+        time_diffs = time_series.diff().fillna(pd.Timedelta(seconds=0))
+        expected_interval = self.min_time_interval
+
+        j = 0
         for i in range(len(df) - 1):
-            current_time = df.iloc[i][self.time_col]
-            next_time = df.iloc[i + 1][self.time_col]
-            expected_interval = self.min_time_interval
-            actual_interval = next_time - current_time
+            if i < j:
+                continue
+            actual_interval = time_diffs.iloc[i + 1]
+            current_time = time_series.iloc[i]
+            next_time = time_series.iloc[i + 1]
             
             if actual_interval > expected_interval:
+                # 排除前后交易日切换的情况
+                current_date = current_time.date() if hasattr(current_time, 'date') else pd.to_datetime(current_time).date()
+                next_date = next_time.date() if hasattr(next_time, 'date') else pd.to_datetime(next_time).date()
+                if current_date != next_date:
+                    continue  # 第一种情形，直接跳过
+                else:
+                    # 第二种情形，排除每日特定时间点切换的情况（如9点、12点）
+                    current_hour = current_time.hour if hasattr(current_time, 'hour') else pd.to_datetime(current_time).hour
+                    next_hour = next_time.hour if hasattr(next_time, 'hour') else pd.to_datetime(next_time).hour
+                    if (current_hour < 12 and next_hour >= 12) or (current_hour < 9 and next_hour >= 9):
+                        continue
+
+                    # 第三种情形，期货在十点十五分到十点三十分休市
+                    if self.label == 'futures' and current_hour == 10 and current_time.minute >= 15 and next_hour == 10 and next_time.minute <= 31:
+                        continue
+
+                    # 第四种情形，检查next_time开始的连续无missing数据的最后一个日期
+                    j = i + 1
+                    next_this_date = current_date  # 初始化，避免未绑定错误
+                    while j < len(df) - 1:
+                        # 用time_diffs直接判断间隔和日期
+                        next_this_time = time_series.iloc[j + 1]
+                        next_this_date = next_this_time.date() if hasattr(next_this_time, 'date') else pd.to_datetime(next_this_time).date()
+                        interval = time_diffs.iloc[j + 1]
+                        if interval > expected_interval or next_this_date != current_date:
+                            break
+                        j += 1
+                    if next_this_date != current_date:
+                        continue
                 missing_sequences.append((i, i + 1))
         
         return missing_sequences
@@ -449,7 +507,12 @@ class DataQualityChecker:
             时间跨度（秒），如果无法计算则返回None
         """
         if self.time_col:
-            return (df.iloc[end_idx][self.time_col] - df.iloc[start_idx][self.time_col] + self.min_time_interval).total_seconds()
+            start_time = pd.to_datetime(df.iloc[start_idx][self.time_col])
+            end_time = pd.to_datetime(df.iloc[end_idx][self.time_col])
+            time_span = (end_time - start_time)
+            if self.min_time_interval is not None:
+                time_span += self.min_time_interval
+            return time_span.total_seconds()
         else:
             return None
     
