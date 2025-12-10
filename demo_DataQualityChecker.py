@@ -12,6 +12,9 @@ def create_sample_data():
     start_date = datetime(2023, 1, 1)
     dates = [start_date + timedelta(hours=i) for i in range(100)]
     
+    # Set random seed for reproducibility
+    np.random.seed(42)
+    
     # Create sample data with issues
     data = {
         'datetime': dates,
@@ -23,14 +26,17 @@ def create_sample_data():
         'volume': np.random.randint(1000, 10000, 100),
         'row_id': range(100)  # Add row identifier to track rows
     }
-    
     df = pd.DataFrame(data)
+
+    df.loc[50:99, 'symbol'] = 'FUTURE2'  # Two different symbols
     
     # Introduce some data quality issues:
     # 1. Zero sequences in volume
     df.loc[10:15, 'volume'] = 0  # Short sequence
     df.loc[30:45, 'volume'] = 0  # Long sequence
     
+    df.loc[0:1, 'close'] = 0  # Edge case: zeros at start
+
     # 2. Zero values in prices
     df.loc[25:30, 'close'] = 0
     
@@ -40,6 +46,7 @@ def create_sample_data():
     # 4. Some string values that should be numeric
     df.loc[70, 'open'] = 'invalid'
     df.loc[71, 'close'] = 'N/A'
+    df.loc[72, 'close'] = 'N//A'
     
     return df
 
@@ -67,12 +74,12 @@ def demo_basic_processing():
     
     print("\n=== Initializing DataQualityChecker ===")
     # Initialize checker with the dataframe
-    checker = DataQualityChecker(df)
+    checker = DataQualityChecker(df, columns=['open', 'high', 'low', 'close', 'volume'], print_info=True)
     print(f"Minimum time interval: {checker.min_time_interval}")
     print(f"Window size in seconds: {checker.window_size_seconds}")
     
     print("\n=== Processing Data ===")
-    processed_df = checker.process_dataframe(df)
+    processed_df = checker.process_dataframe()
     if processed_df is not None:
         print(f"Processed data shape: {processed_df.shape}")
     else:
@@ -80,40 +87,18 @@ def demo_basic_processing():
         processed_df = df
     
     print("\nComparison of before and after:")
-    print("Original zeros in volume (indices 10-15, 30-45):")
-    print(df.loc[8:18, ['datetime', 'volume']])
-    print("\nAfter processing:")
-    print(processed_df.loc[8:18, ['datetime', 'volume']] if len(processed_df) > 18 else processed_df[['datetime', 'volume']])
-    
-    print("\nString values at indices 70-71 after processing:")
-    # Find rows with row_id 70 and 71 in the processed data
-    processed_rows_70_71 = processed_df[processed_df['row_id'].isin([70, 71])]
-    if not processed_rows_70_71.empty:
-        print(processed_rows_70_71[['row_id', 'datetime', 'open', 'close']])
-    else:
-        print("Rows with row_id 70 and 71 were removed during processing")
-   
-    return df, processed_df
+    print("Original Data:")
+    pd.set_option('display.max_rows', 100)
+    print(df)
 
-def demo_custom_zero_handler():
-    """Demonstrate using a custom zero handler"""
-    print("\n\n=== Using Custom Zero Handler ===")
-    df = create_sample_data()
-    
-    checker = DataQualityChecker(df)
-    checker.set_zero_handler(custom_zero_handler)
-    
-    print("Processing with custom zero handler...")
-    processed_df = checker.process_dataframe(df)
-    
-    print("Volume column around zero sequence:")
-    print("Original:")
-    print(df.loc[8:20, ['row_id', 'datetime', 'volume']])
-    print("\nProcessed with custom handler:")
-    if processed_df is not None:
-        print(processed_df.loc[8:20, ['row_id', 'datetime', 'volume']] if len(processed_df) > 20 else processed_df[['datetime', 'volume']])
-    else:
-        print("Warning: processed_df is None")
+    print("\nProcessed Data:")
+    print(processed_df)
+
+    # Save processed data using DataQualityChecker's save method
+    checker.save_dataframe('../data/demo_DataQualityChecker_processed_data.csv', 'csv', False)
+    checker.save_dataframe('../data/demo_DataQualityChecker_issues.csv', 'csv', True)
+
+    return df, processed_df
 
 if __name__ == "__main__":
     print("Data Quality Checker Demo")
@@ -121,9 +106,6 @@ if __name__ == "__main__":
     
     # Run basic demo
     original_df, processed_df = demo_basic_processing()
-    
-    # Run custom handler demo
-    demo_custom_zero_handler()
     
     print("\n=== Summary ===")
     print(f"Original data had {len(original_df)} rows")
