@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import List, Optional, Tuple, Dict
 from enum import Enum
 from ContractRollover import ContractRollover
+import pandas as pd
 
 class ValidityStatus(Enum):
     VALID = "valid"
@@ -32,6 +33,33 @@ class ValidityStatus(Enum):
     NEGATIVE_PRICES = "negative_prices"
     MANUALLY_OVERRIDDEN_VALID = "manually_overridden_valid"
     MANUALLY_OVERRIDDEN_INVALID = "manually_overridden_invalid"
+
+@staticmethod
+def calculate_settlement(rollover: 'ContractRollover',
+                            old_price_field: str,
+                            new_price_field: str,
+                            window_size: int,
+                            new_price_old_data_bool: bool) -> Tuple[float, float]:
+    """
+    计算窗口内的旧合约和新合约的结算价格均值
+
+    Args:
+        rollover: ContractRollover对象
+        old_price_field: 旧合约价格字段名
+        new_price_field: 新合约价格字段名
+        window_size: 窗口大小（行数）
+
+    Returns:
+        (旧合约结算均值, 新合约结算均值)
+    """
+    old_prices = rollover.old_contract_old_data[old_price_field].iloc[-window_size:]
+    if new_price_old_data_bool:
+        new_prices = rollover.new_contract_old_data[new_price_field].iloc[-window_size:]
+    else:
+        new_prices = rollover.new_contract_new_data[new_price_field].iloc[:window_size]
+    old_price = float(old_prices.mean()) if not old_prices.empty else 0.0
+    new_price = float(new_prices.mean()) if not new_prices.empty else 0.0
+    return old_price, new_price
 
 class AdjustmentStrategy(ABC):
     """复权策略基类"""
@@ -99,36 +127,9 @@ class PercentageAdjustmentStrategy(AdjustmentStrategy):
         self.new_price_old_data_bool = new_price_old_data_bool
         self.name = "percentage_window" if use_window else "percentage"
 
-    @staticmethod
-    def calculate_settlement(rollover: 'ContractRollover',
-                             old_price_field: str,
-                             new_price_field: str,
-                             window_size: int,
-                             new_price_old_data_bool: bool) -> Tuple[float, float]:
-        """
-        计算窗口内的旧合约和新合约的结算价格均值
-
-        Args:
-            rollover: ContractRollover对象
-            old_price_field: 旧合约价格字段名
-            new_price_field: 新合约价格字段名
-            window_size: 窗口大小（行数）
-
-        Returns:
-            (旧合约结算均值, 新合约结算均值)
-        """
-        old_prices = rollover.old_contract_old_data[old_price_field].iloc[-window_size:]
-        if new_price_old_data_bool:
-            new_prices = rollover.new_contract_old_data[new_price_field].iloc[-window_size:]
-        else:
-            new_prices = rollover.new_contract_new_data[new_price_field].iloc[:window_size]
-        old_price = float(old_prices.mean()) if not old_prices.empty else 0.0
-        new_price = float(new_prices.mean()) if not new_prices.empty else 0.0
-        return old_price, new_price
-    
     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
         if self.use_window:
-            old_price, new_price = self.calculate_settlement(
+            old_price, new_price = calculate_settlement(
                 rollover,
                 self.old_price_field,
                 self.new_price_field,
@@ -154,7 +155,7 @@ class PercentageAdjustmentStrategy(AdjustmentStrategy):
         if not rollover.is_valid:
             return False, ValidityStatus.INSUFFICIENT_DATA
         if self.use_window:
-            old_price, new_price = self.calculate_settlement(
+            old_price, new_price = calculate_settlement(
                 rollover,
                 self.old_price_field,
                 self.new_price_field,
@@ -183,79 +184,116 @@ class PercentageAdjustmentStrategy(AdjustmentStrategy):
     def get_name(self) -> str:
         return self.name
 
-# class SpreadAdjustmentStrategy(AdjustmentStrategy):
-#     """价差复权策略"""
+class SpreadAdjustmentStrategy(AdjustmentStrategy):
+    """价差复权策略"""
     
-#     def __init__(self, use_window: bool = True, window_size_hours: float = 2.0):
-#         self.use_window = use_window
-#         self.window_size_hours = window_size_hours
+    def __init__(self, use_window: bool = True, window_size: int = 120,
+                 old_price_field: str = 'close', new_price_field: str = 'close',
+                 new_price_old_data_bool: bool = True):
+        self.use_window = use_window
+        self.window_size = window_size
+        self.old_price_field = old_price_field
+        self.new_price_field = new_price_field
+        self.new_price_old_data_bool = new_price_old_data_bool
+        self.name = "spread_window" if self.use_window else "spread"
     
-#     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
-#         if self.use_window:
-#             old_price, new_price = rollover._calculate_settlement_prices()
-#             gap = new_price - old_price
-#             return 1.0, gap
-#         else:
-#             old_price, new_price = rollover._calculate_single_point_prices()
-#             gap = new_price - old_price
-#             return 1.0, gap
-    
-#     def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
-#         # 价差复权几乎总是有效的，除非数据不足
-#         if len(rollover.old_data) == 0 or len(rollover.new_data) == 0:
-#             return False, ValidityStatus.INSUFFICIENT_DATA
-#         return True, ValidityStatus.VALID
-    
-#     def get_name(self) -> str:
-#         return "spread_window" if self.use_window else "spread"
+    def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
+        if self.use_window:
+            old_price, new_price = calculate_settlement(
+                rollover,
+                self.old_price_field,
+                self.new_price_field,
+                self.window_size,
+                self.new_price_old_data_bool
+            )
+        else:
+            old_price = rollover.old_contract_old_data[self.old_price_field].iloc[-1]
+            if self.new_price_old_data_bool:
+                new_price = rollover.new_contract_old_data[self.new_price_field].iloc[-1]
+            else:
+                new_price = rollover.new_contract_new_data[self.new_price_field].iloc[0]
 
-# class WeightedAverageStrategy(AdjustmentStrategy):
-#     """加权平均复权策略 - 用于处理异常情况"""
+        gap = new_price - old_price
+        return 1.0, gap
     
-#     def __init__(self, volume_weights: Optional[Dict[str, float]] = None):
-#         self.volume_weights = volume_weights or {}
+    def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
+        # 价差复权几乎总是有效的，除非数据不足
+        if self.new_price_old_data_bool:
+            if len(rollover.old_contract_old_data) == 0 or len(rollover.new_contract_old_data) == 0:
+                return False, ValidityStatus.INSUFFICIENT_DATA
+        else:
+            if len(rollover.old_contract_old_data) == 0 or len(rollover.new_contract_new_data) == 0:
+                return False, ValidityStatus.INSUFFICIENT_DATA
+        return True, ValidityStatus.VALID
     
-#     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
-#         # 基于成交量加权的平均价格计算
-#         old_avg = self._calculate_weighted_average(rollover.old_data)
-#         new_avg = self._calculate_weighted_average(rollover.new_data)
-        
-#         if old_avg == 0:
-#             return 1.0, 0.0
-        
-#         adjustment = new_avg / old_avg
-#         gap = new_avg - old_avg
-        
-#         return adjustment, gap
+    def get_name(self) -> str:
+        return self.name
+
+    def apply_adjustment_to_results(self, adjustment: float, results: list):
+        self.apply_additive_adjustment(adjustment, results)
+
+class WeightedAverageStrategy(AdjustmentStrategy):
+    """加权平均复权策略 - 用于处理异常情况"""
     
-#     def _calculate_weighted_average(self, prices: List[Tuple[datetime, float]]) -> float:
-#         if not prices:
-#             return 0.0
+    def __init__(self, weights_by_time: Optional[Dict[str, float]] = None,
+                 old_price_field: str = 'close', new_price_field: str = 'close',
+                 time_field: str = 'datetime', new_price_old_data_bool: bool = True):
+        self.weights_by_time = weights_by_time or {}
+        self.old_price_field = old_price_field
+        self.new_price_field = new_price_field
+        self.time_field = time_field
+        self.new_price_old_data_bool = new_price_old_data_bool
+        self.name = "weighted_average"
+    
+    def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
+        # 基于成交量加权的平均价格计算
+        old_avg = self._calculate_weighted_average(rollover.old_contract_old_data, price_field=self.old_price_field)
+        if self.new_price_old_data_bool:
+            new_avg = self._calculate_weighted_average(rollover.new_contract_old_data, price_field=self.new_price_field)
+        else:
+            new_avg = self._calculate_weighted_average(rollover.new_contract_new_data, price_field=self.new_price_field)
+
+        if old_avg == 0:
+            return 1.0, 0.0
         
-#         # 如果有成交量权重，使用加权平均
-#         if self.volume_weights:
-#             total_weight = 0
-#             weighted_sum = 0
-#             for ts, price in prices:
-#                 contract_key = ts.strftime("%Y%m")
-#                 weight = self.volume_weights.get(contract_key, 1.0)
-#                 weighted_sum += price * weight
-#                 total_weight += weight
+        adjustment = new_avg / old_avg
+        gap = new_avg - old_avg
+        
+        return adjustment, gap
+    
+    def _calculate_weighted_average(self, df: pd.DataFrame, price_field: str) -> float:
+        if df.empty:
+            return 0.0
+        
+        # 如果有成交量权重，使用加权平均
+        if self.weights_by_time:
+            total_weight = 0
+            weighted_sum = 0
+            for _, row in df.iterrows():
+                ts = row[self.time_field]
+                price = row[price_field]
+                weight = self.weights_by_time.get(ts, 1.0)
+                weighted_sum += price * weight
+                total_weight += weight
             
-#             if total_weight > 0:
-#                 return weighted_sum / total_weight
+            if total_weight > 0:
+                return weighted_sum / total_weight
         
-#         # 否则使用简单平均
-#         all_prices = [price for _, price in prices]
-#         return sum(all_prices) / len(all_prices)
+        # 否则使用简单平均
+        all_prices = [row[price_field] for _, row in df.iterrows()]
+        return sum(all_prices) / len(all_prices)
     
-#     def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
-#         if len(rollover.old_data) == 0 or len(rollover.new_data) == 0:
-#             return False, ValidityStatus.INSUFFICIENT_DATA
-#         return True, ValidityStatus.VALID
+    def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
+        if self.new_price_old_data_bool:
+            if len(rollover.old_contract_old_data) == 0 or len(rollover.new_contract_old_data) == 0:
+                return False, ValidityStatus.INSUFFICIENT_DATA
+        else:
+            if len(rollover.old_contract_old_data) == 0 or len(rollover.new_contract_new_data) == 0:
+                return False, ValidityStatus.INSUFFICIENT_DATA
+        return True, ValidityStatus.VALID
     
-#     def get_name(self) -> str:
-#         return "weighted_average"
+    def get_name(self) -> str:
+        return self.name
 
 class ManualOverrideStrategy(AdjustmentStrategy):
     """手动覆盖策略 - 允许用户手动指定调整参数"""
@@ -272,44 +310,3 @@ class ManualOverrideStrategy(AdjustmentStrategy):
     
     def get_name(self) -> str:
         return "manual_override"
-
-class ProductPeriodStrategySelector:
-    """
-    根据品种和时间段选择特定的AdjustmentStrategy。
-    支持灵活配置每个品种在不同时间段的复权策略，未命中特殊配置时可指定默认策略。
-    """
-
-    def __init__(self, default_strategy: AdjustmentStrategy):
-        # 配置字典: {product: [(start_date, end_date, strategy), ...]}
-        self.strategy_map: Dict[str, List[Tuple[datetime, datetime, AdjustmentStrategy]]] = {}
-        self.default_strategy = default_strategy
-
-    def add_strategy(self, product: str, start_date: datetime, end_date: datetime, strategy: AdjustmentStrategy):
-        """
-        为指定品种和时间段添加特殊策略
-        """
-        if product not in self.strategy_map:
-            self.strategy_map[product] = []
-        self.strategy_map[product].append((start_date, end_date, strategy))
-
-    def get_strategy(self, product: str, dt: datetime) -> AdjustmentStrategy:
-        """
-        获取指定品种和时间点的策略，优先返回命中特殊配置的策略，否则返回默认策略
-        """
-        if product in self.strategy_map:
-            for start, end, strategy in self.strategy_map[product]:
-                if start <= dt <= end:
-                    return strategy
-        return self.default_strategy
-
-    def describe(self) -> Dict[str, List[Tuple[str, str, str]]]:
-        """
-        返回当前所有配置的描述信息，便于调试和展示
-        """
-        desc = {}
-        for product, lst in self.strategy_map.items():
-            desc[product] = [
-                (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), strategy.get_name())
-                for start, end, strategy in lst
-            ]
-        return desc

@@ -28,8 +28,12 @@ from StrategySelector import ProductPeriodStrategySelector
 from AdjustmentStrategy import PercentageAdjustmentStrategy
 import pandas as pd
 from tqdm import tqdm
+import os
 
 data_mink_path = '../data/data_mink_product_2025/'
+data_mink_path_main = '../data/data_mink_product_2025_main/'
+os.makedirs(data_mink_path_main, exist_ok=True)
+
 product_contract_start_end_path = '../data/wind_mapping.csv'
 product_contract_start_end = pd.read_csv(product_contract_start_end_path)
 product_contract_start_end.columns.values[0] = "PRODUCT"
@@ -38,23 +42,33 @@ product_contract_start_end.columns.values[1] = "CONTRACT"
 product_id_list = product_contract_start_end[~product_contract_start_end['PRODUCT'].str.contains('_S')]['PRODUCT'].str.split('.').str[0].unique().tolist()
 # product_id_list = ['A']
 
-all_results = []
+all_adjustments = []
+all_issues = []
 for product_id in tqdm(product_id_list, desc="Processing products"):
     detector = DataMinkBasics.RolloverDetector()
     data = product_contract_start_end[product_contract_start_end['PRODUCT'].str.startswith(product_id + '.')]
     detector.add_data_table('product_contract_start_end', data)
-    detector.detect_rollover_points(path=data_mink_path)
+    detector.generate_main_contract_series(path=data_mink_path)
     strategy_selector = ProductPeriodStrategySelector(default_strategy={
         "AdjustmentStrategy": PercentageAdjustmentStrategy(
             old_price_field='close_price', new_price_field='close_price', 
             new_price_old_data_bool=True, use_window=False
         )
     })
-    all_results.append(detector.get_adjustment_factor(strategy_selector))
+    all_adjustments.append(detector.get_adjustment_factor(strategy_selector))
+    main_contract_series = detector.data_tables.get('main_tick')
+    if main_contract_series is not None:
+        output_path = f"{data_mink_path_main}{product_id}.csv"
+        main_contract_series.to_csv(output_path, index=False)
+    all_issues.append(detector.data_tables.get('main_tick_issues', pd.DataFrame()))
 
 # 拼接所有结果并输出到csv
-final_df = pd.concat(all_results, ignore_index=True)
-print(final_df)
-final_df.to_csv('./futures_data_mink/rollover_adjustments.csv', index=False)
+adjustments_df = pd.concat(all_adjustments, ignore_index=True)
+# print(adjustments_df)
+adjustments_df.to_csv('../data/rollover_adjustments.csv', index=False)
+
+issues_df = pd.concat(all_issues, ignore_index=True)
+issues_df.to_csv('../data/main_tick_issues.csv', index=False)
+
 
 # End of file futures_data_mink/futures_data_mink_check_7.py

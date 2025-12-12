@@ -26,6 +26,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from ContractRollover import ContractRollover
 from RolloverDetector import FuturesRolloverDetectorBase 
 from StrategySelector import ProductPeriodStrategySelector
+from DataQualityChecker import DataQualityChecker
 from AdjustmentStrategy import AdjustmentStrategy
 import pandas as pd
 
@@ -134,7 +135,7 @@ def windcode_to_unique_instrument_id(windcode: str, decade_str: str = year_tens)
 class RolloverDetector(FuturesRolloverDetectorBase):
     @property
     def EXPECTED_TABLE_NAMES(self) -> List[str]:
-        return ['product_contract_start_end', 'old_contract_tick', 'new_contract_tick']
+        return ['product_contract_start_end', 'old_contract_tick', 'new_contract_tick', 'main_tick']
     
     @property
     def EXPECTED_COLUMNS(self) -> Dict[str, List[str]]:
@@ -152,7 +153,10 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             'new_contract_tick': ['trading_day', 'trade_time']
         }
     
-    def detect_rollover_points(self, path: str, suppress_year_before: int = 0) -> List[ContractRollover]:
+    def detect_rollover_points(self, 
+                               path: str, 
+                               suppress_year_before: int = 0,
+                               generate_main_contract_series: bool = False) -> List[ContractRollover]:
         """
         检测期货合约切换点（Rollover Points）。
         本方法根据合约起止日期表（'product_contract_start_end'）自动检测合约切换点，并加载切换点前后两个合约的行情数据。
@@ -282,6 +286,7 @@ class RolloverDetector(FuturesRolloverDetectorBase):
                 return startdate_str[2]
                 
         rollovers = []
+        main_contract_series = []
         for idx in range(len(df)):
             if idx + 1 >= len(df):
                 continue
@@ -312,8 +317,10 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             if not old_tick_empty and new_tick_empty:
                 raise ValueError(f"{product_id}: 第{idx}行: old_contract_tick非空但new_contract_tick为空，不合法")
             
+            this_start_date = pd.to_datetime(this_row['STARTDATE'])
             this_end_date = pd.to_datetime(this_row['ENDDATE'])
             next_start_date = pd.to_datetime(next_row['STARTDATE'])
+            next_end_date = pd.to_datetime(next_row['ENDDATE'])
 
             old_trading_days = pd.to_datetime(self.data_tables['old_contract_tick']['trading_day'])
             new_trading_days = pd.to_datetime(self.data_tables['new_contract_tick']['trading_day'])
@@ -366,8 +373,34 @@ class RolloverDetector(FuturesRolloverDetectorBase):
                 is_valid=is_valid
             )
             rollovers.append(rollover)
+
+            if generate_main_contract_series:
+                if idx == 0:
+                    mask = (old_trading_days >= this_start_date) & (old_trading_days <= this_end_date)
+                    main_contract_series.append(self.data_tables['old_contract_tick'][mask])
+                mask = (new_trading_days >= next_start_date) & (new_trading_days <= next_end_date)
+                main_contract_series.append(self.data_tables['new_contract_tick'][mask])
+
         self.rollover_points = rollovers
+        if generate_main_contract_series:
+            all_issues = []
+            for df in main_contract_series:
+                if df.empty:
+                    continue
+                checker = DataQualityChecker(df, columns=['open_price', 'highest_price', 'lowest_price', 'close_price'],
+                                             column_mapping={'symbol': 'unique_instrument_id', 'time': 'trade_time'})
+                all_issues.append(checker.issues_df)
+            if all_issues:
+                self.data_tables['main_tick_issues'] = pd.concat(all_issues, ignore_index=True)
+            else:
+                self.data_tables['main_tick_issues'] = pd.DataFrame()
+            non_empty_series = [df for df in main_contract_series if not df.empty]
+            self.data_tables['main_tick'] = pd.concat(non_empty_series, ignore_index=True) if non_empty_series else pd.DataFrame()
         return rollovers
+    
+    def generate_main_contract_series(self, path: str) -> pd.DataFrame:
+        self.detect_rollover_points(path, generate_main_contract_series=True)
+        return self.data_tables.get('main_tick', pd.DataFrame())
     
     def contract_data_loader(self, contract: str, path : str) -> pd.DataFrame:
         """
@@ -421,10 +454,8 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             is_valid, validity_status = strategy.is_valid(rollover)
             if is_valid:
                 adjustment, _ = strategy.calculate_adjustment(rollover)
-                rollover_date = rollover.new_contract_start_datetime
             else:
                 adjustment = None
-                rollover_date = rollover.new_contract_start_date
             
             # 在每次循环时，将之前results中的adjustment都乘以当前adjustment（仅当adjustment不为None时）
             strategy.apply_adjustment_to_results(adjustment, results)
@@ -433,8 +464,10 @@ class RolloverDetector(FuturesRolloverDetectorBase):
                 'product_id': product_id,
                 'old_unique_instrument_id': rollover.old_contract,
                 'new_unique_instrument_id': rollover.new_contract,
-                'rollover_date': rollover_date,
+                'rollover_date': rollover.new_contract_start_date,
+                'rollover_datetime': rollover.new_contract_start_datetime,
                 'adjustment_strategy': strategy.__class__.__name__,
+                'is_valid': is_valid,
                 'validity_status': validity_status,
                 'adjustment': adjustment
             })
