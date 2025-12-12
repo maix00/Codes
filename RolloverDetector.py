@@ -8,38 +8,45 @@ from ContractRollover import ContractRollover
 class FuturesRolloverDetectorBase:
     """合约切换点检测器基类"""
     
-    # 期望的数据表变量名
-    EXPECTED_TABLE_NAMES = ['main_tick', 'date_main_sub', 'date_main_close_last']
+    # 期望的数据表变量名（基类不定义，要求子类实现）
+    # EXPECTED_TABLE_NAMES = ['main_tick', 'date_main_sub', 'date_main_close_last', 'product_contract_start_end', 'contract_tick']
+    @property
+    def EXPECTED_TABLE_NAMES(self) -> List[str]:
+        raise NotImplementedError("请在子类中定义 EXPECTED_TABLE_NAMES 属性")
     
-    # 根据期望的数据表变量名，找到对应的预期列结构
-    EXPECTED_COLUMNS = {
-        'main_tick': ['datetime', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'position'],
-        'date_main_sub': ['datetime', 'symbol', 'sub_symbol'],
-        'date_main_close_last': ['datetime', 'symbol', 'close', 'last_close']
-    }
+    # 期望的列结构（基类不定义，要求子类实现）
+    # EXPECTED_COLUMNS = {
+    #     'main_tick': ['datetime', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'position'],
+    #     'date_main_sub': ['datetime', 'symbol', 'sub_symbol'],
+    #     'date_main_close_last': ['datetime', 'symbol', 'close', 'last_close'],
+    #     'product_contract_start_end': ['product', 'symbol', 'start_date', 'end_date'],
+    #     'contract_tick': ['datetime', 'symbol']
+    # }
+    @property
+    def EXPECTED_COLUMNS(self) -> Dict[str, List[str]]:
+        raise NotImplementedError("请在子类中定义 EXPECTED_COLUMNS 属性")
     
-    # 根据期望的数据表变量名，找到对应的必需列结构
-    REQUIRED_COLUMNS = {
-        'main_tick': ['datetime', 'symbol', 'close'],
-        'date_main_sub': ['datetime', 'symbol', 'sub_symbol'],
-        'date_main_close_last': ['datetime', 'symbol', 'close']
-    }
+    # 期望的必需列结构（基类不定义，要求子类实现）
+    # REQUIRED_COLUMNS = {
+    #     'main_tick': ['datetime', 'symbol', 'close'],
+    #     'date_main_sub': ['datetime', 'symbol', 'sub_symbol'],
+    #     'date_main_close_last': ['datetime', 'symbol', 'close'],
+    #     'product_contract_start_end': ['product', 'symbol', 'start_date', 'end_date'],
+    #     'contract_tick' : ['datetime', 'symbol']
+    # }
+    @property
+    def REQUIRED_COLUMNS(self) -> Dict[str, List[str]]:
+        raise NotImplementedError("请在子类中定义 REQUIRED_COLUMNS 属性")
     
     def __init__(self, 
                  column_mapping: Optional[Dict[str, Dict[str, str]]] = None,
                  data_tables: Optional[Dict[str, pd.DataFrame]] = None):
         """
         初始化FuturesRolloverDetectorBase
-        
+
         Args:
-            adjustment_config: 复权配置
             column_mapping: 每个数据表的列名映射字典
-                           例如: {
-                               'main_tick': {'时间': 'datetime', '合约': 'symbol'},
-                               'date_main_sub': {'日期': 'datetime', '主力合约': 'main_symbol'}
-                           }
-            data_tables: 直接提供的数据表字典，键为标准表名，值为DataFrame
-                         例如: {'main_tick': tick_dataframe, 'date_main_sub': sub_dataframe}
+            data_tables: 直接提供的数据表字典
         """
         # 设置每个表的列名映射，默认为空字典
         self.column_mapping = column_mapping or {}
@@ -47,6 +54,8 @@ class FuturesRolloverDetectorBase:
         self.contract_data: Dict[str, pd.DataFrame] = {}
         # 存储数据表
         self.data_tables: Dict[str, pd.DataFrame] = {}
+        # 存储Rollover点列表
+        self.rollover_points: List[ContractRollover] = []
         
         # 根据提供的data_tables设置数据表
         if data_tables:
@@ -148,7 +157,7 @@ class FuturesRolloverDetectorBase:
             try:
                 mapped_data = self._map_input_columns(data, table_name)
                 self.data_tables[table_name] = mapped_data
-                print(f"数据表 '{table_name}' 已添加并应用列名映射")
+                # print(f"数据表 '{table_name}' 已添加并应用列名映射")
                 # 自动检查列要求
                 self._check_table_column_requirements(table_name)
             except ValueError as e:
@@ -269,19 +278,19 @@ class FuturesRolloverDetectorBase:
         if missing_expected:
             print(f"  数据表 {table_name} 缺少期望列: {missing_expected}")
             
-        print(f"  数据表 {table_name} 列要求检查通过")
+        # print(f"  数据表 {table_name} 列要求检查通过")
         return True
     
-    def detect_rollover_points(self) -> List[ContractRollover]:
+    def detect_rollover_points(self, *args, **kwargs) -> List[ContractRollover]:
         """
         检测合约切换点 - 基类方法，需要在子类中实现
-        
+
         Args:
-            data: 输入数据
-            
+            **kwargs: 可选参数，供子类实现时使用
+
         Returns:
             检测到的切换点列表
-            
+
         Raises:
             NotImplementedError: 基类方法需要在子类中实现
         """
@@ -349,185 +358,223 @@ class FuturesRolloverDetectorBase:
         print(f"  提取到 {len(result_data)} 条{'旧' if is_old else '新'}合约 {contract} 的数据")
         return result_data.reset_index(drop=True)
 
-class FuturesRolloverDetector_MainTick(FuturesRolloverDetectorBase):
-    """基于main_tick数据表的合约切换点检测器"""
+# class FuturesRolloverDetector_MainTick(FuturesRolloverDetectorBase):
+#     """基于main_tick数据表的合约切换点检测器"""
+
+#     @property
+#     def EXPECTED_TABLE_NAMES(self) -> List[str]:
+#         return ['main_tick']
     
-    def detect_rollover_points(self) -> List[ContractRollover]:
-        """
-        基于main_tick数据表的切换点检测方法
+#     @property
+#     def EXPECTED_COLUMNS(self) -> Dict[str, List[str]]:
+#         return {
+#             'main_tick': ['datetime', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'position']
+#         }
+
+#     @property
+#     def REQUIRED_COLUMNS(self) -> Dict[str, List[str]]:
+#         return {
+#             'main_tick': ['datetime', 'symbol', 'close']
+#         }
+    
+#     def detect_rollover_points(self) -> List[ContractRollover]:
+#         """
+#         基于main_tick数据表的切换点检测方法
         
-        Args:
-            data: 输入数据（用于检测symbol变化点）
+#         Args:
+#             data: 输入数据（用于检测symbol变化点）
             
-        Returns:
-            检测到的切换点列表
-        """
+#         Returns:
+#             检测到的切换点列表
+#         """
             
-        # 按时间排序
-        data = self.get_mapped_table('main_tick').sort_values('datetime').reset_index(drop=True)
+#         # 按时间排序
+#         data = self.get_mapped_table('main_tick').sort_values('datetime').reset_index(drop=True)
         
-        # 检测symbol变化点
-        data['symbol_change'] = data['symbol'] != data['symbol'].shift(1)
-        change_indices = data[data['symbol_change']].index.tolist()
+#         # 检测symbol变化点
+#         data['symbol_change'] = data['symbol'] != data['symbol'].shift(1)
+#         change_indices = data[data['symbol_change']].index.tolist()
         
-        # 移除第一个点（因为是数据开始）
-        if change_indices and change_indices[0] == 0:
-            change_indices = change_indices[1:]
+#         # 移除第一个点（因为是数据开始）
+#         if change_indices and change_indices[0] == 0:
+#             change_indices = change_indices[1:]
         
-        print(f"检测到 {len(change_indices)} 个合约切换点")
-        print(f"数据时间范围: {data['datetime'].min()} 到 {data['datetime'].max()}")
+#         print(f"检测到 {len(change_indices)} 个合约切换点")
+#         print(f"数据时间范围: {data['datetime'].min()} 到 {data['datetime'].max()}")
         
-        # 构建切换事件并进行验证
-        rollover_points = []
-        for idx in change_indices:
-            try:
-                # 获取切换时间点
-                rollover_time = data.iloc[idx]['datetime']
-                old_contract = data.iloc[idx - 1]['symbol']
-                new_contract = data.iloc[idx]['symbol']
+#         # 构建切换事件并进行验证
+#         rollover_points = []
+#         for idx in change_indices:
+#             try:
+#                 # 获取切换时间点
+#                 rollover_time = data.iloc[idx]['datetime']
+#                 old_contract = data.iloc[idx - 1]['symbol']
+#                 new_contract = data.iloc[idx]['symbol']
                 
-                print(f"\n处理切换点 {rollover_time}: {old_contract} -> {new_contract}")
+#                 print(f"\n处理切换点 {rollover_time}: {old_contract} -> {new_contract}")
                 
-                # 从main_tick数据中提取旧合约和新合约的数据
-                # 向上遍历旧合约数据直到symbol变化
-                old_contract_data = self._extract_contract_data(data, old_contract, rollover_time, is_old=True)
-                # 向下遍历新合约数据直到symbol变化
-                new_contract_data = self._extract_contract_data(data, new_contract, rollover_time, is_old=False)
+#                 # 从main_tick数据中提取旧合约和新合约的数据
+#                 # 向上遍历旧合约数据直到symbol变化
+#                 old_contract_data = self._extract_contract_data(data, old_contract, rollover_time, is_old=True)
+#                 # 向下遍历新合约数据直到symbol变化
+#                 new_contract_data = self._extract_contract_data(data, new_contract, rollover_time, is_old=False)
                 
-                # 创建切换事件
-                rollover = ContractRollover(
-                    rollover_datetime=rollover_time,
-                    old_contract=old_contract,
-                    new_contract=new_contract,
-                    old_contract_old_data=old_contract_data,
-                    old_contract_new_data=pd.DataFrame(),
-                    new_contract_old_data=pd.DataFrame(),
-                    new_contract_new_data=new_contract_data,
-                )
+#                 # 创建切换事件
+#                 rollover = ContractRollover(
+#                     rollover_datetime=rollover_time,
+#                     old_contract=old_contract,
+#                     new_contract=new_contract,
+#                     old_contract_old_data=old_contract_data,
+#                     old_contract_new_data=pd.DataFrame(),
+#                     new_contract_old_data=pd.DataFrame(),
+#                     new_contract_new_data=new_contract_data,
+#                 )
                 
-                rollover.is_valid = rollover.validate_data_tables(['old_contract_old_data', 'new_contract_new_data'])
+#                 rollover.is_valid = rollover.validate_data_tables(['old_contract_old_data', 'new_contract_new_data'])
                 
-                if rollover.is_valid:
-                    rollover_points.append(rollover)
-                else:
-                    # 直接报错
-                    raise ValueError(f"切换点 {rollover.rollover_datetime} 无效")
+#                 if rollover.is_valid:
+#                     rollover_points.append(rollover)
+#                 else:
+#                     # 直接报错
+#                     raise ValueError(f"切换点 {rollover.rollover_datetime} 无效")
                     
-            except Exception as e:
-                print(f"处理切换点 {idx} 时出错: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
+#             except Exception as e:
+#                 print(f"处理切换点 {idx} 时出错: {e}")
+#                 import traceback
+#                 traceback.print_exc()
+#                 continue
         
-        print(f"\n有效切换点: {len(rollover_points)}/{len(change_indices)}")
+#         print(f"\n有效切换点: {len(rollover_points)}/{len(change_indices)}")
         
-        return rollover_points
+#         return rollover_points
 
-class FuturesRolloverDetector_MainTick_MainCloseLast(FuturesRolloverDetectorBase):
-    """使用main_tick和date_main_close_last两个表格的合约切换点检测器"""
+# class FuturesRolloverDetector_MainTick_MainCloseLast(FuturesRolloverDetectorBase):
+#     """使用main_tick和date_main_close_last两个表格的合约切换点检测器"""
     
-    def detect_rollover_points(self) -> List[ContractRollover]:
-        """
-        增强切换点检测方法，使用main_tick和date_main_close_last两个表格
+#     @property
+#     def EXPECTED_TABLE_NAMES(self) -> List[str]:
+#         return ['main_tick', 'date_main_close_last']
+    
+#     @property
+#     def EXPECTED_COLUMNS(self) -> Dict[str, List[str]]:
+#         return {
+#             'main_tick': ['datetime', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'position'],
+#             'date_main_close_last': ['datetime', 'symbol', 'close', 'last_close']
+#         }
+
+#     @property
+#     def REQUIRED_COLUMNS(self) -> Dict[str, List[str]]:
+#         return {
+#             'main_tick': ['datetime', 'symbol', 'close'],
+#             'date_main_close_last': ['datetime', 'symbol', 'close']
+#         }
+
+#     def detect_rollover_points(self) -> List[ContractRollover]:
+#         """
+#         增强切换点检测方法，使用main_tick和date_main_close_last两个表格
         
-        Returns:
-            检测到的切换点列表
-        """
-        # 验证必需的数据表是否可用
-        main_tick_data = self.get_mapped_table('main_tick')
-        date_main_close_last_data = self.get_mapped_table('date_main_close_last')
+#         Returns:
+#             检测到的切换点列表
+#         """
+#         # 验证必需的数据表是否可用
+#         main_tick_data = self.get_mapped_table('main_tick')
+#         date_main_close_last_data = self.get_mapped_table('date_main_close_last')
         
-        # 按时间排序
-        main_tick_data = main_tick_data.sort_values('datetime').reset_index(drop=True)
-        date_main_close_last_data = date_main_close_last_data.sort_values('datetime').reset_index(drop=True)
+#         # 按时间排序
+#         main_tick_data = main_tick_data.sort_values('datetime').reset_index(drop=True)
+#         date_main_close_last_data = date_main_close_last_data.sort_values('datetime').reset_index(drop=True)
 
         
-        # 检测symbol变化点
-        main_tick_data['symbol_change'] = main_tick_data['symbol'] != main_tick_data['symbol'].shift(1)
-        change_indices = main_tick_data[main_tick_data['symbol_change']].index.tolist()
+#         # 检测symbol变化点
+#         main_tick_data['symbol_change'] = main_tick_data['symbol'] != main_tick_data['symbol'].shift(1)
+#         change_indices = main_tick_data[main_tick_data['symbol_change']].index.tolist()
         
-        # 移除第一个点（因为是数据开始）
-        if change_indices and change_indices[0] == 0:
-            change_indices = change_indices[1:]
+#         # 移除第一个点（因为是数据开始）
+#         if change_indices and change_indices[0] == 0:
+#             change_indices = change_indices[1:]
         
-        print(f"检测到 {len(change_indices)} 个合约切换点")
-        print(f"数据时间范围: {main_tick_data['datetime'].min()} 到 {main_tick_data['datetime'].max()}")
+#         print(f"检测到 {len(change_indices)} 个合约切换点")
+#         print(f"数据时间范围: {main_tick_data['datetime'].min()} 到 {main_tick_data['datetime'].max()}")
         
-        # 构建切换事件并进行验证
-        rollover_points = []
-        for idx in change_indices:
-            try:
-                # 获取切换时间点
-                rollover_time = main_tick_data.iloc[idx]['datetime']
-                old_contract = main_tick_data.iloc[idx - 1]['symbol']
-                new_contract = main_tick_data.iloc[idx]['symbol']
+#         # 构建切换事件并进行验证
+#         rollover_points = []
+#         for idx in change_indices:
+#             try:
+#                 # 获取切换时间点
+#                 rollover_time = main_tick_data.iloc[idx]['datetime']
+#                 old_contract = main_tick_data.iloc[idx - 1]['symbol']
+#                 new_contract = main_tick_data.iloc[idx]['symbol']
                 
-                print(f"\n处理切换点 {rollover_time}: {old_contract} -> {new_contract}")
+#                 print(f"\n处理切换点 {rollover_time}: {old_contract} -> {new_contract}")
                 
-                # 从main_tick数据中提取旧合约和新合约的数据
-                # 向上遍历旧合约数据直到symbol变化
-                old_contract_data = self._extract_contract_data(main_tick_data, old_contract, rollover_time, is_old=True)
-                # 向下遍历新合约数据直到symbol变化
-                new_contract_data = self._extract_contract_data(main_tick_data, new_contract, rollover_time, is_old=False)
+#                 # 从main_tick数据中提取旧合约和新合约的数据
+#                 # 向上遍历旧合约数据直到symbol变化
+#                 old_contract_data = self._extract_contract_data(main_tick_data, old_contract, rollover_time, is_old=True)
+#                 # 向下遍历新合约数据直到symbol变化
+#                 new_contract_data = self._extract_contract_data(main_tick_data, new_contract, rollover_time, is_old=False)
                 
-                # 创建切换事件
-                rollover = ContractRollover(
-                    rollover_datetime=rollover_time,
-                    old_contract=old_contract,
-                    new_contract=new_contract,
-                    old_contract_old_data=old_contract_data,
-                    old_contract_new_data=pd.DataFrame(),
-                    new_contract_old_data=pd.DataFrame(),
-                    new_contract_new_data=new_contract_data,
-                )
+#                 # 创建切换事件
+#                 rollover = ContractRollover(
+#                     rollover_datetime=rollover_time,
+#                     old_contract=old_contract,
+#                     new_contract=new_contract,
+#                     old_contract_old_data=old_contract_data,
+#                     old_contract_new_data=pd.DataFrame(),
+#                     new_contract_old_data=pd.DataFrame(),
+#                     new_contract_new_data=new_contract_data,
+#                 )
 
-                # Check rollover.new_contract_start_date is date not None
-                if rollover.new_contract_start_date is None:
-                    raise ValueError(f"切换点 {rollover.rollover_datetime} 无效: 新合约 {rollover.new_contract} 的开始时间不能为None")
+#                 # Check rollover.new_contract_start_date is date not None
+#                 if rollover.new_contract_start_date is None:
+#                     raise ValueError(f"切换点 {rollover.rollover_datetime} 无效: 新合约 {rollover.new_contract} 的开始时间不能为None")
 
-                rollover.new_contract_old_data = self._extract_new_contract_old_data(date_main_close_last_data, new_contract, rollover.new_contract_start_date)
+#                 rollover.new_contract_old_data = self._extract_new_contract_old_data(date_main_close_last_data, new_contract, rollover.new_contract_start_date)
 
-                rollover.is_valid = rollover.validate_data_tables(['old_contract_old_data', 'new_contract_old_data', 'new_contract_new_data'])
+#                 rollover.is_valid = rollover.validate_data_tables(['old_contract_old_data', 'new_contract_old_data', 'new_contract_new_data'])
                 
-                if rollover.is_valid:
-                    rollover_points.append(rollover)
-                else:
-                    # 直接报错
-                    raise ValueError(f"切换点 {rollover.rollover_datetime} 无效")
+#                 if rollover.is_valid:
+#                     rollover_points.append(rollover)
+#                 else:
+#                     # 直接报错
+#                     raise ValueError(f"切换点 {rollover.rollover_datetime} 无效")
                     
-            except Exception as e:
-                print(f"处理切换点 {idx} 时出错: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
+#             except Exception as e:
+#                 print(f"处理切换点 {idx} 时出错: {e}")
+#                 import traceback
+#                 traceback.print_exc()
+#                 continue
         
-        print(f"\n有效切换点: {len(rollover_points)}/{len(change_indices)}")
+#         print(f"\n有效切换点: {len(rollover_points)}/{len(change_indices)}")
         
-        return rollover_points
+#         return rollover_points
     
-    def _extract_new_contract_old_data(self, date_data: pd.DataFrame, new_contract: str, 
-                                     reference_date: date) -> pd.DataFrame:
-        """
-        从date_main_close_last数据中提取新合约的旧数据
+#     def _extract_new_contract_old_data(self, date_data: pd.DataFrame, new_contract: str, 
+#                                      reference_date: date) -> pd.DataFrame:
+#         """
+#         从date_main_close_last数据中提取新合约的旧数据
         
-        Args:
-            date_data: date_main_close_last数据
-            new_contract: 新合约代码
-            rollover_time: 切换时间点
+#         Args:
+#             date_data: date_main_close_last数据
+#             new_contract: 新合约代码
+#             rollover_time: 切换时间点
             
-        Returns:
-            新合约的旧数据（前一日数据）
-        """
+#         Returns:
+#             新合约的旧数据（前一日数据）
+#         """
         
-        # 在date_main_close_last中查找对应日期和合约的数据
-        filtered_data = date_data[
-            (date_data['symbol'] == new_contract) & 
-            (date_data['datetime'].dt.date == reference_date)
-        ]
+#         # 确保'datetime'列为pandas的datetime类型
+#         if not pd.api.types.is_datetime64_any_dtype(date_data['datetime']):
+#             date_data['datetime'] = pd.to_datetime(date_data['datetime'])
         
-        if filtered_data.empty:
-            print(f"  警告: 未找到 {new_contract} 在 {reference_date} 的数据")
-            return pd.DataFrame()
+#         # 在date_main_close_last中查找对应日期和合约的数据
+#         filtered_data = date_data[
+#             (date_data['symbol'] == new_contract) & 
+#             (date_data['datetime'].dt.date == pd.to_datetime(reference_date).date())
+#         ]
+        
+#         if filtered_data.empty:
+#             print(f"  警告: 未找到 {new_contract} 在 {reference_date} 的数据")
+#             return pd.DataFrame()
             
-        print(f"  找到 {len(filtered_data)} 条 {new_contract} 在 {reference_date} 的数据")
-        return filtered_data.copy().reset_index(drop=True)
+#         print(f"  找到 {len(filtered_data)} 条 {new_contract} 在 {reference_date} 的数据")
+#         return filtered_data.copy().reset_index(drop=True)

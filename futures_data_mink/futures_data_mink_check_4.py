@@ -1,3 +1,12 @@
+"""
+本文件用于批量检查指定文件夹下所有CSV文件的数据质量。
+程序会遍历每个CSV文件，验证其unique_instrument_id字段是否与文件名一致，
+若一致则重命名为symbol，并利用DataQualityChecker类对指定的价格字段
+（open_price, highest_price, lowest_price, close_price）进行质量检查。
+所有发现的问题会被收集并合并，最终输出为一个汇总的CSV文件（data_mink_product_2025_0_issues.csv）。
+输入为原始数据文件夹（data_mink_product_2025_0）中的CSV文件，输出为包含所有数据质量问题的CSV文件。
+"""
+
 import os
 import pandas as pd
 import sys
@@ -6,7 +15,7 @@ from DataQualityChecker import DataQualityChecker
 from tqdm import tqdm
 
 # Path to data folder
-data_folder = '../data/data_mink_product_2025_0'
+data_folder = '../data/data_mink_product_2025'
 
 # List to store all processed dataframes
 all_dfs = []
@@ -24,11 +33,10 @@ for filename in tqdm(os.listdir(data_folder)):
         
         # Verify unique_instrument_id matches filename
         if (df['unique_instrument_id'] == symbol).all():
-            # Rename column
-            df.rename(columns={'unique_instrument_id': 'symbol'}, inplace=True)
             
             # Create DataQualityChecker object
-            checker = DataQualityChecker(df, columns=['open_price', 'highest_price', 'lowest_price', 'close_price'])
+            checker = DataQualityChecker(df, columns=['open_price', 'highest_price', 'lowest_price', 'close_price'], 
+                                         column_mapping={'symbol': 'unique_instrument_id', 'time': 'trade_time'})
             
             # Get issues_df
             issues = checker.issues_df
