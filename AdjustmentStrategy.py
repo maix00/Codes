@@ -65,6 +65,26 @@ class AdjustmentStrategy(ABC):
         """创建策略的副本"""
         import copy
         return copy.deepcopy(self)
+    
+    @staticmethod
+    def apply_multiplicative_adjustment(adjustment: float, results: list):
+        if adjustment is not None and len(results) > 0:
+            for r in results:
+                if r.get('adjustment') is not None:
+                    r['adjustment'] *= adjustment
+
+    @staticmethod
+    def apply_additive_adjustment(adjustment: float, results: list):
+        if adjustment is not None and len(results) > 0:
+            for r in results:
+                if r.get('adjustment') is not None:
+                    r['adjustment'] += adjustment
+
+    def apply_adjustment_to_results(self, adjustment: float, results: list):
+        """
+        基类方法：对子类开放，允许定向至不同的静态方法
+        """
+        self.apply_multiplicative_adjustment(adjustment, results)
 
 class PercentageAdjustmentStrategy(AdjustmentStrategy):
     """百分比复权策略"""
@@ -252,3 +272,44 @@ class ManualOverrideStrategy(AdjustmentStrategy):
     
     def get_name(self) -> str:
         return "manual_override"
+
+class ProductPeriodStrategySelector:
+    """
+    根据品种和时间段选择特定的AdjustmentStrategy。
+    支持灵活配置每个品种在不同时间段的复权策略，未命中特殊配置时可指定默认策略。
+    """
+
+    def __init__(self, default_strategy: AdjustmentStrategy):
+        # 配置字典: {product: [(start_date, end_date, strategy), ...]}
+        self.strategy_map: Dict[str, List[Tuple[datetime, datetime, AdjustmentStrategy]]] = {}
+        self.default_strategy = default_strategy
+
+    def add_strategy(self, product: str, start_date: datetime, end_date: datetime, strategy: AdjustmentStrategy):
+        """
+        为指定品种和时间段添加特殊策略
+        """
+        if product not in self.strategy_map:
+            self.strategy_map[product] = []
+        self.strategy_map[product].append((start_date, end_date, strategy))
+
+    def get_strategy(self, product: str, dt: datetime) -> AdjustmentStrategy:
+        """
+        获取指定品种和时间点的策略，优先返回命中特殊配置的策略，否则返回默认策略
+        """
+        if product in self.strategy_map:
+            for start, end, strategy in self.strategy_map[product]:
+                if start <= dt <= end:
+                    return strategy
+        return self.default_strategy
+
+    def describe(self) -> Dict[str, List[Tuple[str, str, str]]]:
+        """
+        返回当前所有配置的描述信息，便于调试和展示
+        """
+        desc = {}
+        for product, lst in self.strategy_map.items():
+            desc[product] = [
+                (start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), strategy.get_name())
+                for start, end, strategy in lst
+            ]
+        return desc

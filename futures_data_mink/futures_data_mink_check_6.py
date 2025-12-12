@@ -39,3 +39,5 @@ for unique_id in unique_ids:
         if write_header:
             writer.writerow(['unique_instrument_id', 'windcode', 'windcode_simp'])
         writer.writerow([unique_id, windcode, windcode_simp])
+
+# End of file futures_data_mink/futures_data_mink_check_6.py

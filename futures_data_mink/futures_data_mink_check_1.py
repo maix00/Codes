@@ -52,3 +52,5 @@ with open(filename, 'w') as f:
         total_count += count
         f.write(f"Product ID: {product_id}, Unique instrument IDs after last '|': {', '.join(map(str, unique_instruments))}, Count: {count}\n")
     f.write(f"\nTotal Count of unique instrument IDs: {total_count}\n")
+
+# End of file futures_data_mink/futures_data_mink_check_1.py

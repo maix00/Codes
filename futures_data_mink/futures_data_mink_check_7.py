@@ -24,6 +24,7 @@
 """
 
 import DataMinkBasics
+from StrategySelector import ProductPeriodStrategySelector
 from AdjustmentStrategy import PercentageAdjustmentStrategy
 import pandas as pd
 from tqdm import tqdm
@@ -44,42 +45,19 @@ for product_id in tqdm(product_id_list, desc="Processing products"):
     data = product_contract_start_end[product_contract_start_end['PRODUCT'].str.startswith(product_id + '.')]
     detector.add_data_table('product_contract_start_end', data)
     detector.detect_rollover_points(path=data_mink_path)
-    strategy = PercentageAdjustmentStrategy(
-        old_price_field='close_price', new_price_field='close_price', 
-        new_price_old_data_bool=True, use_window=False
-    )
-    results = []
-    for rollover in detector.rollover_points:
-        is_valid, invalid_reason = strategy.is_valid(rollover)
-        if is_valid:
-            adjustment, _ = strategy.calculate_adjustment(rollover)
-            rollover_date = rollover.new_contract_start_datetime
-        else:
-            adjustment = None
-            rollover_date = rollover.new_contract_start_date
-        # Convert contract to unique_instrument_id
-        old_unique_id = DataMinkBasics.windcode_to_unique_instrument_id(rollover.old_contract)
-        new_unique_id = DataMinkBasics.windcode_to_unique_instrument_id(rollover.new_contract)
-        
-        # 在每次循环时，将之前results中的adjustment都乘以当前adjustment（仅当adjustment不为None时）
-        if adjustment is not None and len(results) > 0:
-            for r in results:
-                if r['adjustment'] is not None:
-                    r['adjustment'] *= adjustment
-
-        results.append({
-            'product_id': product_id,
-            'old_unique_instrument_id': old_unique_id,
-            'new_unique_instrument_id': new_unique_id,
-            'rollover_date': rollover_date,
-            'adjustment': adjustment
-        })
-    df = pd.DataFrame(results)
-    all_results.append(df)
+    strategy_selector = ProductPeriodStrategySelector(default_strategy={
+        "AdjustmentStrategy": PercentageAdjustmentStrategy(
+            old_price_field='close_price', new_price_field='close_price', 
+            new_price_old_data_bool=True, use_window=False
+        )
+    })
+    all_results.append(detector.get_adjustment_factor(strategy_selector))
 
 # 拼接所有结果并输出到csv
 final_df = pd.concat(all_results, ignore_index=True)
-print(final_df)
+# 打印所有行和列
+with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+    print(final_df)
 final_df.to_csv('./futures_data_mink/rollover_adjustments.csv', index=False)
 
 # End of file futures_data_mink/futures_data_mink_check_7.py

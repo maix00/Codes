@@ -18,39 +18,25 @@
 '''
 
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime
 from typing import List, Optional, Tuple, Dict
 from ContractRollover import ContractRollover
+from StrategySelector import ProductPeriodStrategySelector
     
 class FuturesRolloverDetectorBase:
     """合约切换点检测器基类"""
     
     # 期望的数据表变量名（基类不定义，要求子类实现）
-    # EXPECTED_TABLE_NAMES = ['main_tick', 'date_main_sub', 'date_main_close_last', 'product_contract_start_end', 'contract_tick']
     @property
     def EXPECTED_TABLE_NAMES(self) -> List[str]:
         raise NotImplementedError("请在子类中定义 EXPECTED_TABLE_NAMES 属性")
     
     # 期望的列结构（基类不定义，要求子类实现）
-    # EXPECTED_COLUMNS = {
-    #     'main_tick': ['datetime', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'position'],
-    #     'date_main_sub': ['datetime', 'symbol', 'sub_symbol'],
-    #     'date_main_close_last': ['datetime', 'symbol', 'close', 'last_close'],
-    #     'product_contract_start_end': ['product', 'symbol', 'start_date', 'end_date'],
-    #     'contract_tick': ['datetime', 'symbol']
-    # }
     @property
     def EXPECTED_COLUMNS(self) -> Dict[str, List[str]]:
         raise NotImplementedError("请在子类中定义 EXPECTED_COLUMNS 属性")
     
     # 期望的必需列结构（基类不定义，要求子类实现）
-    # REQUIRED_COLUMNS = {
-    #     'main_tick': ['datetime', 'symbol', 'close'],
-    #     'date_main_sub': ['datetime', 'symbol', 'sub_symbol'],
-    #     'date_main_close_last': ['datetime', 'symbol', 'close'],
-    #     'product_contract_start_end': ['product', 'symbol', 'start_date', 'end_date'],
-    #     'contract_tick' : ['datetime', 'symbol']
-    # }
     @property
     def REQUIRED_COLUMNS(self) -> Dict[str, List[str]]:
         raise NotImplementedError("请在子类中定义 REQUIRED_COLUMNS 属性")
@@ -374,6 +360,18 @@ class FuturesRolloverDetectorBase:
             
         print(f"  提取到 {len(result_data)} 条{'旧' if is_old else '新'}合约 {contract} 的数据")
         return result_data.reset_index(drop=True)
+
+    def get_adjustment_factor(self, strategy_selector: ProductPeriodStrategySelector) -> pd.DataFrame:
+        """
+        根据ProductPeriodStrategySelector对象获取对应的adjustment_factor，并存储adjustmentstrategy信息
+
+        Args:
+            strategy_selector: ProductPeriodStrategySelector对象
+
+        Returns:
+            adjustment_factor: float
+        """
+        raise NotImplementedError("get_adjustment_factor方法需要在子类中实现")
 
 # class FuturesRolloverDetector_MainTick(FuturesRolloverDetectorBase):
 #     """基于main_tick数据表的合约切换点检测器"""

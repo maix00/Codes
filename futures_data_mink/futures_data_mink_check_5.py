@@ -50,3 +50,5 @@ if codes == codes2:
 else:
     print("codes not in codes2:", sorted(set(codes) - set(codes2)))
     print("codes2 not in codes:", sorted(set(codes2) - set(codes)))
+
+# End of file futures_data_mink/futures_data_mink_check_5.py

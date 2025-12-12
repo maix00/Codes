@@ -46,3 +46,5 @@ with open(output_file, 'w') as f:
 
 print(f"Total unique instruments: {len(unique_ids_list)}")
 print(f"Results saved to {output_file}")
+
+# End of file futures_data_mink/futures_data_mink_check_2.py

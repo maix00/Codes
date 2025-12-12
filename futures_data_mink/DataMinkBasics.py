@@ -25,6 +25,8 @@ import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from ContractRollover import ContractRollover
 from RolloverDetector import FuturesRolloverDetectorBase 
+from StrategySelector import ProductPeriodStrategySelector
+from AdjustmentStrategy import AdjustmentStrategy
 import pandas as pd
 
 
@@ -125,16 +127,24 @@ class RolloverDetector(FuturesRolloverDetectorBase):
     
     def detect_rollover_points(self, path: str, suppress_year_before: int = datetime.now().year) -> List[ContractRollover]:
         """
-        检测合约切换点 - 子类实现
-
-        Args:
-            contract_data_loader: 一个函数，输入合约字符串，返回对应的DataFrame
-
-        Returns:
-            检测到的切换点列表
-
-        Raises:
-            NotImplementedError: 如果未实现
+        检测期货合约切换点（Rollover Points）。
+        本方法根据合约起止日期表（'product_contract_start_end'）自动检测合约切换点，并加载切换点前后两个合约的行情数据。
+        支持对异常数据的多重校验与处理，确保切换点的准确性和数据完整性。
+            path (str): 数据文件路径，用于加载合约行情数据。
+            suppress_year_before (int, optional): 若合约的ENDDATE年份早于该值，则自动忽略该合约。默认为当前年份。
+            List[ContractRollover]: 检测到的合约切换点对象列表，每个对象包含切换前后合约的关键信息及行情数据片段。
+            ValueError: 
+                - 'PRODUCT'列不唯一时抛出。
+                - 存在'STARTDATE'或'ENDDATE'有一个为空的行。
+                - 合约重复但ENDDATE顺序不正确。
+                - old_contract_tick非空但new_contract_tick为空。
+                - 日期格式不正确或无法提取decade_str。
+            NotImplementedError: 若未实现相关子类方法。
+        注意事项:
+            - 本方法依赖于self.data_tables['product_contract_start_end']的数据结构和内容。
+            - 需要实现self.contract_data_loader方法用于加载合约行情数据。
+            - 合约切换点的判定基于合约起止日期的连续性与唯一性。
+        
         """
         # 检查'PRODUCT'列是否唯一
         df = self.data_tables['product_contract_start_end']
@@ -235,8 +245,6 @@ class RolloverDetector(FuturesRolloverDetectorBase):
                 self.data_tables['old_contract_tick'] = self.data_tables['new_contract_tick']
                 self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, path))
                 
-            
-
             # 检查数据表是否为空，跳过不合法情况
             old_tick_empty = self.data_tables["old_contract_tick"].empty
             new_tick_empty = self.data_tables["new_contract_tick"].empty
@@ -336,3 +344,54 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             # print(f"警告: 文件 {file_path} 不存在，返回空DataFrame。")
             return pd.DataFrame(columns=required_cols)
         return pd.read_csv(file_path)
+    
+    def get_adjustment_factor(self, strategy_selector: ProductPeriodStrategySelector) -> pd.DataFrame:
+        """
+        计算并返回每个合约切换点的复权因子（adjustment_factor），并记录所用的AdjustmentStrategy信息。
+
+        参数:
+            strategy_selector: ProductPeriodStrategySelector对象，包含默认的AdjustmentStrategy。
+
+        返回:
+            pd.DataFrame: 每个切换点的复权因子及相关信息，包含product_id、old/new unique_instrument_id、切换日期和adjustment。
+        """
+        if not hasattr(strategy_selector, "default_strategy") or "AdjustmentStrategy" not in strategy_selector.default_strategy:
+            raise ValueError("ProductPeriodStrategySelector.default_strategy 中缺少 'AdjustmentStrategy' 键")
+
+        strategy = strategy_selector.default_strategy["AdjustmentStrategy"]
+
+        results = []
+        for rollover in self.rollover_points:
+            product_id = self.data_tables['product_contract_start_end']['PRODUCT'].iloc[0]
+            if rollover.new_contract_start_datetime:
+                reference_time = rollover.new_contract_start_datetime
+            elif rollover.new_contract_start_date:
+                reference_time = pd.to_datetime(str(rollover.new_contract_start_date))
+            else:
+                reference_time = pd.to_datetime('today')
+            strategy = strategy_selector.get_strategy(product_id, reference_time)['AdjustmentStrategy']
+
+            is_valid, validity_status = strategy.is_valid(rollover)
+            if is_valid:
+                adjustment, _ = strategy.calculate_adjustment(rollover)
+                rollover_date = rollover.new_contract_start_datetime
+            else:
+                adjustment = None
+                rollover_date = rollover.new_contract_start_date
+            # Convert contract to unique_instrument_id
+            old_unique_id = windcode_to_unique_instrument_id(rollover.old_contract)
+            new_unique_id = windcode_to_unique_instrument_id(rollover.new_contract)
+            
+            # 在每次循环时，将之前results中的adjustment都乘以当前adjustment（仅当adjustment不为None时）
+            strategy.apply_adjustment_to_results(adjustment, results)
+
+            results.append({
+                'product_id': product_id,
+                'old_unique_instrument_id': old_unique_id,
+                'new_unique_instrument_id': new_unique_id,
+                'rollover_date': rollover_date,
+                'adjustment_strategy': strategy.__class__.__name__,
+                'validity_status': validity_status,
+                'adjustment': adjustment
+            })
+        return pd.DataFrame(results)

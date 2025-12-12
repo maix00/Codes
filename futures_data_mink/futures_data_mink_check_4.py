@@ -53,3 +53,5 @@ if all_dfs:
     print(result_df)
 else:
     print("No valid CSV files found")
+
+# End of file futures_data_mink/futures_data_mink_check_4.py
