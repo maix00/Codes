@@ -71,7 +71,7 @@ def unique_instrument_id_to_windcode_simp(unique_instrument_id: str) -> str:
     exchange = exchange_map.get(parts[0], parts[0])
     return f"{parts[2]}{parts[3][1:]}.{exchange}"
 
-def windcode_to_unique_instrument_id(windcode: str) -> str:
+def windcode_to_unique_instrument_id(windcode: str, decade_str: str = year_tens) -> str:
     # 示例输入: "RB2210F.DCE"
     try:
         product_month, exchange_code = windcode.split('.')
@@ -96,7 +96,7 @@ def windcode_to_unique_instrument_id(windcode: str) -> str:
         else:
             break
     if digit_seq_len == 3:
-        month = year_tens + month
+        month = decade_str + month
 
     # 构造unique_instrument_id
     unique_instrument_id = f"{exchange}|F|{product_id}|{month}"
@@ -123,7 +123,7 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             'new_contract_tick': ['trading_day', 'trade_time']
         }
     
-    def detect_rollover_points(self, path: str) -> List[ContractRollover]:
+    def detect_rollover_points(self, path: str, suppress_year_before: int = datetime.now().year) -> List[ContractRollover]:
         """
         检测合约切换点 - 子类实现
 
@@ -148,12 +148,16 @@ class RolloverDetector(FuturesRolloverDetectorBase):
         one_null = mask_start_null ^ mask_end_null
 
         # 删除'STARTDATE'和'ENDDATE'都为空的行
-        df.drop(df.index[both_null], inplace=True)
+        df = df.drop(df.index[both_null])
         if one_null.any():
             raise ValueError("存在'STARTDATE'或'ENDDATE'有一个为空的行")
         
         # 
         df = df.sort_values('STARTDATE').reset_index(drop=True)
+
+        # # 打印所有行
+        # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+        #     print(df)
 
         # 遍历所有行，检查CONTRACT重复且ENDDATE顺序
         drop_indices = []
@@ -163,6 +167,10 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             curr_end = df.iloc[idx]['ENDDATE']
             next_start = df.iloc[idx + 1]['STARTDATE']
             next_end = df.iloc[idx + 1]['ENDDATE']
+            # 如果curr_end前四位（年份）小于suppress_year_before，则删除
+            if len(str(int(curr_end))) >= 4 and int(str(int(curr_end))[:4]) < suppress_year_before:
+                drop_indices.append(idx)
+                continue
             if curr_contract == next_contract:
                 if pd.isnull(curr_end) or pd.isnull(next_end) or pd.isnull(next_start):
                     raise ValueError(f"第{idx}或{idx+1}行STARTDATE/ENDDATE有空值，无法比较")
@@ -174,13 +182,10 @@ class RolloverDetector(FuturesRolloverDetectorBase):
                 if (curr_end >= next_start) and (curr_end >= next_end):
                     drop_indices.append(idx + 1)
                 else:
+                    # print(curr_contract, next_contract)
                     raise ValueError(f"第{idx}和{idx+1}行CONTRACT重复但ENDDATE顺序不正确")
         if drop_indices:
             df = df.drop(df.index[drop_indices]).reset_index(drop=True)
-        
-        # # 打印所有行
-        # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-        #     print(df)
 
         # 检查每一行的ENDDATE是否在下一行的STARTDATE之前
         for idx in range(len(df) - 1):
@@ -191,6 +196,23 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             if end_date >= next_start_date:
                 raise ValueError(f"第{idx}行的ENDDATE不在下一行的STARTDATE之前: {end_date} >= {next_start_date}")
         
+        def calculate_decade_str(row):
+                enddate_str = str(int(row['ENDDATE']))
+                if len(enddate_str) < 4:
+                    raise ValueError("ENDDATE格式不正确，无法提取decade_str")
+                # old_contract的小数点前倒数第三个数字字符
+                contract_digits = ''.join([c for c in row['CONTRACT'] if c.isdigit()])
+                if len(contract_digits) < 3:
+                    raise ValueError("contract中数字字符不足3位")
+                contract_third_last = contract_digits[-3]
+                if enddate_str[3] == contract_third_last:
+                    return enddate_str[2]
+                else:
+                    startdate_str = str(int(row['STARTDATE']))
+                    if len(startdate_str) < 3:
+                        raise ValueError("STARTDATE格式不正确，无法提取decade_str")
+                    return startdate_str[2]
+                
         rollovers = []
         for idx in range(len(df)):
             if idx + 1 >= len(df):
@@ -202,12 +224,18 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             old_contract = this_row['CONTRACT']
             new_contract = next_row['CONTRACT']
 
+            old_contract_UID = windcode_to_unique_instrument_id(old_contract, decade_str=calculate_decade_str(this_row))
+            new_contract_UID = windcode_to_unique_instrument_id(new_contract, decade_str=calculate_decade_str(next_row))
+            # print(old_contract_UID, new_contract_UID)
+
             if idx == 0:
-                self.add_data_table("old_contract_tick", self.contract_data_loader(old_contract, path))
-                self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract, path))
+                self.add_data_table("old_contract_tick", self.contract_data_loader(old_contract_UID, path))
+                self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, path))
             else:
                 self.data_tables['old_contract_tick'] = self.data_tables['new_contract_tick']
-                self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract, path))
+                self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, path))
+                
+            
 
             # 检查数据表是否为空，跳过不合法情况
             old_tick_empty = self.data_tables["old_contract_tick"].empty
@@ -217,7 +245,7 @@ class RolloverDetector(FuturesRolloverDetectorBase):
             if old_tick_empty and not new_tick_empty:
                 continue
             if not old_tick_empty and new_tick_empty:
-                raise ValueError("old_contract_tick非空但new_contract_tick为空，不合法")
+                raise ValueError(f"第{idx}行: old_contract_tick非空但new_contract_tick为空，不合法")
             
             # 兼容ENDDATE为数值（如20250312.0）或字符串格式
             this_end_val = this_row['ENDDATE']
@@ -300,7 +328,7 @@ class RolloverDetector(FuturesRolloverDetectorBase):
         说明:
             本方法根据合约字符串生成unique_instrument_id，并拼接为csv文件名，从指定路径读取数据。
         """
-        file_name = windcode_to_unique_instrument_id(contract) + '.csv'
+        file_name = contract + '.csv'
         file_path = os.path.join(path, file_name)
         if not os.path.exists(file_path):
             # 返回一个包含 old_contract_tick 所需列的空 DataFrame
