@@ -1,12 +1,16 @@
 """
-This script performs quality checks and extracts summary information from a futures data parquet file.
-It reads the data, analyzes unique values in key columns, and writes the results to a timestamped log file.
-Specifically, it:
-- Outputs the first 10 rows of the DataFrame.
-- Lists unique values in 'exchange_id', 'unique_instrument_id' (with digits removed), and 'product_id'.
-- Extracts and checks the values between the first and second '|' in 'unique_instrument_id'.
-- Counts unique instrument IDs for each product and provides a total count.
-文件说明: 本文件用于对期货数据进行质量检查和信息提取，并将结果输出到日志文件，便于后续数据分析和核查。
+该脚本用于分析和检查期货数据明细文件（parquet 格式），并将分析结果输出到带有时间戳的日志文本文件中。
+功能说明：
+1. 读取指定路径下的 parquet 数据文件，加载为 pandas DataFrame。
+2. 提取并输出部分字段的唯一值，包括 'exchange_id'、'unique_instrument_id'（去除数字部分）、'product_id'。
+3. 分析 'unique_instrument_id' 字段中 '|' 分隔的第二部分内容，并判断是否全部为 'F'。
+4. 统计每个 'product_id' 下，'unique_instrument_id' 最后一个 '|' 后的数字部分的唯一数量，并输出详细信息。
+5. 输出数据总行数和所有产品的唯一 instrument id 总数。
+6. 所有分析结果均写入带有当前时间戳的日志文件，便于后续追踪和比对。
+输入：
+- 一个 parquet 格式的期货数据明细文件，路径为 '../data/data_mink/data_qc_future_mink_202501.parquet'。
+输出：
+- 一个包含数据分析结果的文本日志文件，文件名格式为 'futures_data_mink_check_log_时间戳.txt'，保存在 './futures_data_mink/' 目录下。
 """
 
 import pandas as pd

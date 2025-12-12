@@ -1,3 +1,24 @@
+'''
+本模块定义了期货合约复权（调整）策略的基类 `AdjustmentStrategy` 及其若干实现类，用于在合约换月时对价格序列进行调整。主要内容包括：
+1. `ValidityStatus` 枚举：定义了复权策略有效性的多种状态，如有效、零除无效、数据不足、负价格、手动覆盖等。
+2. `AdjustmentStrategy` 抽象基类：规定了所有复权策略需实现的核心接口，包括：
+    - `calculate_adjustment(rollover)`：计算调整因子和价差，输入为合约换月事件对象 `ContractRollover`，输出为 `(调整因子, 价差)` 的元组。
+    - `is_valid(rollover)`：判断当前策略对给定换月事件是否有效，返回 `(是否有效, 状态)` 的元组。
+    - `get_name()`：返回策略名称。
+    - `clone()`：返回策略对象的深拷贝。
+3. `PercentageAdjustmentStrategy`：基于百分比的复权策略，可选用窗口均值或单点价格，支持自定义价格字段。
+4. `ManualOverrideStrategy`：手动指定调整因子和价差的策略，适用于特殊或人工干预场景。
+输入：
+    - `ContractRollover` 对象，包含旧合约与新合约的价格数据（如收盘价、结算价等）。
+输出：
+    - `calculate_adjustment` 返回 `(调整因子: float, 价差: float)`，用于后续价格序列的复权处理。
+    - `is_valid` 返回 `(bool, ValidityStatus)`，指示策略是否适用及原因。
+    - `get_name` 返回策略名称字符串。
+功能说明：
+    - 该模块为期货合约换月时的价格调整提供了统一的策略接口和多种实现方式，便于扩展和维护。
+    - 支持自动和手动复权，能够根据实际业务需求灵活选择合适的调整方法。
+'''
+
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import List, Optional, Tuple, Dict

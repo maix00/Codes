@@ -1,3 +1,25 @@
+'''
+ContractRollover 数据结构用于管理和描述期货合约切换（Rollover）事件及相关数据。
+主要功能：
+- 存储旧合约与新合约的代码、切换时间点、有效性等基础信息。
+- 管理四种数据表：旧合约历史数据、旧合约当前数据、新合约历史数据、新合约当前数据，便于分析合约切换前后的行情数据。
+- 自动计算关键时间点，包括新合约开始时间/日期、旧合约结束时间/日期，辅助后续数据处理与分析。
+- 提供数据摘要（get_data_summary），便于快速了解各数据表的基本情况（数据量、时间范围、字段）。
+- 提供数据表有效性校验（validate_data_tables），确保指定的数据表存在有效数据。
+输入：
+- old_contract, new_contract: 字符串，分别为旧合约和新合约代码。
+- rollover_datetime: datetime，可选，合约切换时间点。
+- old_contract_old_data, old_contract_new_data, new_contract_old_data, new_contract_new_data: pd.DataFrame，四种数据表，存储不同阶段的行情数据。
+- datetime_col_name: 字符串，时间列名称，默认为"datetime"。
+输出：
+- 关键时间点属性（如new_contract_start_datetime等），便于后续分析。
+- get_data_summary() 方法返回各数据表的摘要信息（数据量、时间范围、字段）。
+- validate_data_tables(table_names) 方法返回布尔值，指示指定数据表是否均有数据。
+适用场景：
+- 期货合约切换时的数据管理、分析与回测。
+- 需要对合约切换前后行情数据进行对比、拼接或校验的场景。
+'''
+
 import pandas as pd
 from datetime import datetime, date
 from dataclasses import dataclass, field

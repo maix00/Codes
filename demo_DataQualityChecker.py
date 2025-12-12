@@ -1,7 +1,22 @@
+"""
+本脚本演示了如何使用 DataQualityChecker 工具对金融时间序列数据进行数据质量检测与处理。
+主要功能：
+1. 生成包含多种数据质量问题的样本数据（如零值序列、异常值、字符串型异常、不同合约等）。
+2. 利用 DataQualityChecker 对数据进行自动化质量检查和修复，包括检测并处理零值区间、异常值、非数值型数据等问题。
+3. 展示数据处理前后的对比，并将处理结果和发现的问题分别保存为 CSV 文件。
+输入：
+- 无需外部输入，脚本会自动生成测试用的样本数据。
+输出：
+- 处理后的数据文件（demo_DataQualityChecker_processed_data.csv）
+- 检测到的数据质量问题文件（demo_DataQualityChecker_issues.csv）
+适用场景：
+- 金融行情数据的清洗、异常检测与修复流程演示。
+- 数据质量工具的功能测试与展示。
+"""
+
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import warnings
 
 # Import our DataQualityChecker
 from DataQualityChecker import DataQualityChecker
