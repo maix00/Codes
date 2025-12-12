@@ -39,7 +39,6 @@ product_id_list = product_contract_start_end[~product_contract_start_end['PRODUC
 # product_id_list = ['A']
 
 all_results = []
-
 for product_id in tqdm(product_id_list, desc="Processing products"):
     detector = DataMinkBasics.RolloverDetector()
     data = product_contract_start_end[product_contract_start_end['PRODUCT'].str.startswith(product_id + '.')]
@@ -55,9 +54,7 @@ for product_id in tqdm(product_id_list, desc="Processing products"):
 
 # 拼接所有结果并输出到csv
 final_df = pd.concat(all_results, ignore_index=True)
-# 打印所有行和列
-with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-    print(final_df)
+print(final_df)
 final_df.to_csv('./futures_data_mink/rollover_adjustments.csv', index=False)
 
 # End of file futures_data_mink/futures_data_mink_check_7.py
