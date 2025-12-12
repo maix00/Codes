@@ -60,6 +60,13 @@ for product_id in tqdm(product_id_list, desc="Processing products"):
         # Convert contract to unique_instrument_id
         old_unique_id = DataMinkBasics.windcode_to_unique_instrument_id(rollover.old_contract)
         new_unique_id = DataMinkBasics.windcode_to_unique_instrument_id(rollover.new_contract)
+        
+        # 在每次循环时，将之前results中的adjustment都乘以当前adjustment（仅当adjustment不为None时）
+        if adjustment is not None and len(results) > 0:
+            for r in results:
+                if r['adjustment'] is not None:
+                    r['adjustment'] *= adjustment
+
         results.append({
             'product_id': product_id,
             'old_unique_instrument_id': old_unique_id,
