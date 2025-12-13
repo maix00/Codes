@@ -20,7 +20,7 @@ DataMinkBasics.py
 """
 
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from ContractRollover import ContractRollover
@@ -156,7 +156,8 @@ class FuturesProcessor(FuturesProcessorBase):
     def detect_rollover_points(self, 
                                path: str, 
                                suppress_year_before: int = 0,
-                               generate_main_contract_series: bool = False) -> List[ContractRollover]:
+                               generate_main_contract_series: bool = False,
+                               adjust_main_contract_series: bool = False) -> List[ContractRollover]:
         """
         检测期货合约切换点（Rollover Points）。
         本方法根据合约起止日期表（'product_contract_start_end'）自动检测合约切换点，并加载切换点前后两个合约的行情数据。
@@ -177,6 +178,9 @@ class FuturesProcessor(FuturesProcessorBase):
             - 合约切换点的判定基于合约起止日期的连续性与唯一性。
         
         """
+        if not generate_main_contract_series:
+            adjust_main_contract_series = False
+
         # 检查'PRODUCT'列是否唯一
         df = self.data_tables['product_contract_start_end']
         if df['PRODUCT'].nunique() != 1:
@@ -375,11 +379,33 @@ class FuturesProcessor(FuturesProcessorBase):
             rollovers.append(rollover)
 
             if generate_main_contract_series:
+                # 将第一个1之前的0也改成1，并返回是否存在这样的0
+                def mask_alter_zero_before_first_one(mask: pd.Series) -> Tuple[pd.Series, bool]:
+                    mask_arr = mask.values
+                    exists_zero_before_first_one = False
+                    # 遍历mask_arr，找到第一个1的索引，把它前一个idx的值改为1
+                    first_one_idx = None
+                    for i, val in enumerate(mask_arr):
+                        if val:
+                            first_one_idx = i
+                            break
+                    if first_one_idx is not None and first_one_idx > 0:
+                        exists_zero_before_first_one = True
+                        mask_arr[first_one_idx - 1] = 1
+                        mask = pd.Series(mask_arr, index=mask.index)
+                    return mask, exists_zero_before_first_one
+                table_mask_dict = {
+                    'new_contract_tick': mask_alter_zero_before_first_one(
+                        (new_trading_days >= next_start_date) & (new_trading_days <= next_end_date))
+                }
                 if idx == 0:
-                    mask = (old_trading_days >= this_start_date) & (old_trading_days <= this_end_date)
-                    main_contract_series.append(self.data_tables['old_contract_tick'][mask])
-                mask = (new_trading_days >= next_start_date) & (new_trading_days <= next_end_date)
-                main_contract_series.append(self.data_tables['new_contract_tick'][mask])
+                    table_mask_dict['old_contract_tick'] = mask_alter_zero_before_first_one(
+                        (old_trading_days >= this_start_date) & (old_trading_days <= this_end_date))
+                for table_name, (mask, mask_bool) in table_mask_dict.items():
+                    if mask_bool:
+                        main_contract_series.append(self.data_tables[table_name][mask][1:])
+                    else:
+                        main_contract_series.append(self.data_tables[table_name][mask])
 
         self.rollover_points = rollovers
         if generate_main_contract_series:

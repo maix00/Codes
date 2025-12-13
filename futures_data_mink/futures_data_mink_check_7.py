@@ -45,6 +45,7 @@ product_id_list = product_contract_start_end[
 # product_id_list = ['A']
 
 all_adjustments = []
+all_main_ticks = []
 all_issues = []
 for product_id in tqdm(product_id_list, desc="Processing products"):
     detector = DataMinkBasics.FuturesProcessor()
@@ -64,6 +65,7 @@ for product_id in tqdm(product_id_list, desc="Processing products"):
     if main_contract_series is not None and not main_contract_series.empty:
         output_path = f"{data_mink_path_main}{product_id}.csv"
         main_contract_series.to_csv(output_path, index=False)
+        all_main_ticks.append(main_contract_series)
     main_contract_series_issue = detector.data_tables.get('main_tick_issues')
     if main_contract_series_issue is not None and not main_contract_series_issue.empty:
         all_issues.append(main_contract_series_issue)
@@ -72,6 +74,9 @@ for product_id in tqdm(product_id_list, desc="Processing products"):
 adjustments_df = pd.concat([df.dropna(axis=1, how='all') for df in all_adjustments], ignore_index=True)
 # print(adjustments_df)
 adjustments_df.to_csv('../data/rollover_adjustments.csv', index=False)
+
+main_ticks = pd.concat(all_main_ticks, ignore_index=True)
+main_ticks.to_csv('../data/data_mink_main_ticks.csv', index=False)
 
 issues_df = pd.concat(all_issues, ignore_index=True)
 issues_df.to_csv('../data/main_tick_issues.csv', index=False)
