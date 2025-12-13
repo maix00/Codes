@@ -389,7 +389,8 @@ class RolloverDetector(FuturesRolloverDetectorBase):
                     continue
                 checker = DataQualityChecker(df, columns=['open_price', 'highest_price', 'lowest_price', 'close_price'],
                                              column_mapping={'symbol': 'unique_instrument_id', 'time': 'trade_time'})
-                all_issues.append(checker.issues_df)
+                if checker.issues_df is not None and not checker.issues_df.empty:
+                    all_issues.append(checker.issues_df)
             if all_issues:
                 self.data_tables['main_tick_issues'] = pd.concat(all_issues, ignore_index=True)
             else:

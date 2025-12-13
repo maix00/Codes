@@ -139,7 +139,7 @@ class DataQualityChecker:
         # 将所有含有数值的列转化为数值类型
         for col in df.columns if self.columns is None else self.columns:
             try:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df.loc[:, col] = pd.to_numeric(df[col], errors='coerce')
             except:
                 pass
 
@@ -256,7 +256,7 @@ class DataQualityChecker:
         try:
             # 尝试转换为datetime
             if df[self.time_col].dtype == 'object':
-                df[self.time_col] = pd.to_datetime(df[self.time_col])
+                df.loc[:, self.time_col] = pd.to_datetime(df[self.time_col])
 
             dt_series = df[self.time_col]
                 
@@ -377,8 +377,11 @@ class DataQualityChecker:
                     'DETAILS': [details]
                 })
                 # Only concatenate if new_issue is not empty and not all-NA
-                if not new_issue.empty and not new_issue.isna().all(axis=None):
-                    self.issues_df = pd.concat([self.issues_df, new_issue], ignore_index=True)
+                if not new_issue.empty and len(new_issue) > 0:
+                    if self.issues_df.empty:
+                        self.issues_df = new_issue
+                    else:
+                        self.issues_df = pd.concat([self.issues_df, new_issue], ignore_index=True)
             
         # 检测缺失值并记录
         if self.time_col and self.min_time_interval:
