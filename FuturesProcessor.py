@@ -1,5 +1,5 @@
 '''
-本模块定义了期货合约切换点检测的基类 FuturesRolloverDetectorBase 及其相关方法，旨在为不同类型的合约切换点检测器提供统一的数据表管理、列名映射、数据校验和切换点提取的基础功能。
+本模块定义了期货合约切换点检测的基类 FuturesProcessorBase 及其相关方法，旨在为不同类型的合约切换点检测器提供统一的数据表管理、列名映射、数据校验和切换点提取的基础功能。
 主要功能包括：
 1. 数据表的加载与管理：支持多种标准数据表（如 main_tick、date_main_close_last 等），并可通过列名映射适配不同来源的数据格式。
 2. 列结构校验：自动检查数据表是否包含所需的必需列和期望列，确保后续检测逻辑的正确性。
@@ -23,7 +23,7 @@ from typing import List, Optional, Tuple, Dict
 from ContractRollover import ContractRollover
 from StrategySelector import ProductPeriodStrategySelector
     
-class FuturesRolloverDetectorBase:
+class FuturesProcessorBase:
     """合约切换点检测器基类"""
     
     # 期望的数据表变量名（基类不定义，要求子类实现）
@@ -45,7 +45,7 @@ class FuturesRolloverDetectorBase:
                  column_mapping: Optional[Dict[str, Dict[str, str]]] = None,
                  data_tables: Optional[Dict[str, pd.DataFrame]] = None):
         """
-        初始化FuturesRolloverDetectorBase
+        初始化FuturesProcessorBase
 
         Args:
             column_mapping: 每个数据表的列名映射字典
@@ -123,26 +123,26 @@ class FuturesRolloverDetectorBase:
             
         return mapped_data
     
-    def set_column_mapping(self, table_type: str, mapping: Dict[str, str]):
+    def set_column_mapping(self, table_name: str, mapping: Dict[str, str]):
         """
         为特定数据表设置列名映射，并立即应用到已存在的数据表上
         
         Args:
-            table_type: 数据表类型
+            table_name: 数据表名
             mapping: 列名映射字典
                     键为用户提供的列名，值为期望的列名
                     例如: {'时间': 'datetime', '合约': 'symbol', '开盘价': 'open'}
         """
-        self.column_mapping[table_type] = mapping
+        self.column_mapping[table_name] = mapping
         
         # 如果该表已存在，立即应用列名映射
-        if table_type in self.data_tables:
-            print(f"为数据表 '{table_type}' 应用新的列名映射")
+        if table_name in self.data_tables:
+            print(f"为数据表 '{table_name}' 应用新的列名映射")
             try:
-                mapped_data = self._map_input_columns(self.data_tables[table_type], table_type)
-                self.data_tables[table_type] = mapped_data
+                mapped_data = self._map_input_columns(self.data_tables[table_name], table_name)
+                self.data_tables[table_name] = mapped_data
                 # 自动检查列要求
-                self._check_table_column_requirements(table_type)
+                self._check_table_column_requirements(table_name)
             except ValueError as e:
                 print(f"列映射应用失败: {e}")
     
@@ -382,7 +382,7 @@ class FuturesRolloverDetectorBase:
         """
         raise NotImplementedError("generate_main_contract_series方法需要在子类中实现")
 
-# class FuturesRolloverDetector_MainTick(FuturesRolloverDetectorBase):
+# class FuturesRolloverDetector_MainTick(FuturesProcessorBase):
 #     """基于main_tick数据表的合约切换点检测器"""
 
 #     @property
@@ -472,7 +472,7 @@ class FuturesRolloverDetectorBase:
         
 #         return rollover_points
 
-# class FuturesRolloverDetector_MainTick_MainCloseLast(FuturesRolloverDetectorBase):
+# class FuturesRolloverDetector_MainTick_MainCloseLast(FuturesProcessorBase):
 #     """使用main_tick和date_main_close_last两个表格的合约切换点检测器"""
     
 #     @property

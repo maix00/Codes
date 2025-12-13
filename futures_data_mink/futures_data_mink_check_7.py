@@ -47,7 +47,7 @@ product_id_list = product_contract_start_end[
 all_adjustments = []
 all_issues = []
 for product_id in tqdm(product_id_list, desc="Processing products"):
-    detector = DataMinkBasics.RolloverDetector()
+    detector = DataMinkBasics.FuturesProcessor()
     data = product_contract_start_end[product_contract_start_end['PRODUCT'].str.startswith(product_id + '.')]
     detector.add_data_table('product_contract_start_end', data)
     detector.generate_main_contract_series(path=data_mink_path)

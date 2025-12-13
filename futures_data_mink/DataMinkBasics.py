@@ -24,7 +24,7 @@ from typing import List, Dict
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from ContractRollover import ContractRollover
-from RolloverDetector import FuturesRolloverDetectorBase 
+from FuturesProcessor import FuturesProcessorBase 
 from StrategySelector import ProductPeriodStrategySelector
 from DataQualityChecker import DataQualityChecker
 from AdjustmentStrategy import AdjustmentStrategy
@@ -132,7 +132,7 @@ def windcode_to_unique_instrument_id(windcode: str, decade_str: str = year_tens)
     unique_instrument_id = f"{exchange}|F|{product_id}|{month}"
     return unique_instrument_id
 
-class RolloverDetector(FuturesRolloverDetectorBase):
+class FuturesProcessor(FuturesProcessorBase):
     @property
     def EXPECTED_TABLE_NAMES(self) -> List[str]:
         return ['product_contract_start_end', 'old_contract_tick', 'new_contract_tick', 'main_tick']
@@ -472,4 +472,11 @@ class RolloverDetector(FuturesRolloverDetectorBase):
                 'validity_status': validity_status,
                 'adjustment': adjustment
             })
-        return pd.DataFrame(results)
+        self.data_tables['adjustment_factors'] = pd.DataFrame(results)
+        return self.data_tables['adjustment_factors']
+    
+class MultipleFuturesProcessor(FuturesProcessorBase):
+    @property
+    def EXPECTED_TABLE_NAMES(self) -> List[str]:
+        return ['main_tick_path', 'main_tick', 'return_tick', 'adjustment_factors', 'main_tick_issues']
+    
