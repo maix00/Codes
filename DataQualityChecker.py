@@ -182,11 +182,11 @@ class DataQualityChecker:
         """
         solution_mapping = {
             DataIssueLabel.MISSING_VALUES: DataIssueSolution.NO_ACTION,
-            DataIssueLabel.ZERO_SEQUENCE_LONG: DataIssueSolution.LINEAR_INTERPOLATION,
-            DataIssueLabel.ZERO_SEQUENCE_SHORT: DataIssueSolution.LINEAR_INTERPOLATION,
+            DataIssueLabel.ZERO_SEQUENCE_LONG: DataIssueSolution.FORWARD_FILL,
+            DataIssueLabel.ZERO_SEQUENCE_SHORT: DataIssueSolution.FORWARD_FILL,
             DataIssueLabel.ZERO_SEQUENCE_ALL: DataIssueSolution.ERROR,
             DataIssueLabel.ZERO_SEQUENCE_AT_START: DataIssueSolution.ERROR,
-            DataIssueLabel.ZERO_SEQUENCE_AT_VERY_START: DataIssueSolution.DROP_ROWS,
+            DataIssueLabel.ZERO_SEQUENCE_AT_VERY_START: DataIssueSolution.ERROR,
             DataIssueLabel.ZERO_SEQUENCE_AT_END: DataIssueSolution.ERROR,
             DataIssueLabel.OUTLIERS_MAD: DataIssueSolution.OUTLIERS_MEDIAN,
         }
@@ -287,6 +287,11 @@ class DataQualityChecker:
                 solution = issue['SOLUTION_LABEL']
                 if solution in self.solution_handlers:
                     df = self.solution_handlers[solution](df, issue['START_ROW'], issue['END_ROW'], issue['COLUMN'], issue.to_dict())
+                    # 标记问题行
+                    if pd.notnull(issue['START_ROW']) and pd.notnull(issue['END_ROW']):
+                        idx_range = range(int(issue['START_ROW']), int(issue['END_ROW']) + 1)
+                        df.loc[df.index.isin(idx_range), 'DATA_ISSUE'] = issue['ISSUE_LABEL']
+                        df.loc[df.index.isin(idx_range), 'DATA_ISSUE_SOLUTION'] = issue['SOLUTION_LABEL']
             if df is not None and not df.empty:
                 processed_groups.append(df)
         

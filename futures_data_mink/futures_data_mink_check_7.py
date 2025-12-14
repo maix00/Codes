@@ -42,44 +42,65 @@ product_contract_start_end.columns.values[1] = "CONTRACT"
 product_id_list = product_contract_start_end[
     ~product_contract_start_end['PRODUCT'].str.contains('_S|-S')
 ]['PRODUCT'].str.split('.').str[0].unique().tolist()
-# product_id_list = ['A']
+# product_id_list = ['BZ']
 
 all_adjustments = []
 all_main_ticks = []
+all_main_ticks_adjusted = []
 all_issues = []
 for product_id in tqdm(product_id_list, desc="Processing products"):
     detector = DataMinkBasics.FuturesProcessor()
     data = product_contract_start_end[product_contract_start_end['PRODUCT'].str.startswith(product_id + '.')]
     detector.add_data_table('product_contract_start_end', data)
-    detector.generate_main_contract_series(path=data_mink_path)
     strategy_selector = ProductPeriodStrategySelector(default_strategy={
         "AdjustmentStrategy": PercentageAdjustmentStrategy(
             old_price_field='close_price', new_price_field='close_price', 
             new_price_old_data_bool=True, use_window=False
         )
     })
-    adjustment_df = detector.get_adjustment_factor(strategy_selector)
+    detector.generate_main_contract_series_adjusted(path=data_mink_path, strategy_selector=strategy_selector)
+    
+    adjustment_df = detector.data_tables.get('adjustment_factors')
     if adjustment_df is not None and not adjustment_df.empty and len(adjustment_df) > 0:
         all_adjustments.append(adjustment_df)
+    
     main_contract_series = detector.data_tables.get('main_tick')
     if main_contract_series is not None and not main_contract_series.empty:
         output_path = f"{data_mink_path_main}{product_id}.csv"
         main_contract_series.to_csv(output_path, index=False)
         all_main_ticks.append(main_contract_series)
+
+    main_contract_series = detector.data_tables.get('main_tick_adjusted')
+    if main_contract_series is not None and not main_contract_series.empty:
+        all_main_ticks_adjusted.append(main_contract_series)
+    
     main_contract_series_issue = detector.data_tables.get('main_tick_issues')
     if main_contract_series_issue is not None and not main_contract_series_issue.empty:
         all_issues.append(main_contract_series_issue)
 
 # 拼接所有结果并输出到csvs
-adjustments_df = pd.concat([df.dropna(axis=1, how='all') for df in all_adjustments], ignore_index=True)
-# print(adjustments_df)
-adjustments_df.to_csv('../data/rollover_adjustments.csv', index=False)
+if all_adjustments:
+    adjustments_df = pd.concat([df.dropna(axis=1, how='all') for df in all_adjustments], ignore_index=True)
+    adjustments_df.to_csv('../data/data_mink_rollover_adjustments.csv', index=False)
+else:
+    print("No adjustments found.")
 
-main_ticks = pd.concat(all_main_ticks, ignore_index=True)
-main_ticks.to_csv('../data/data_mink_main_ticks.csv', index=False)
+if all_main_ticks_adjusted:
+    main_ticks_adjusted = pd.concat(all_main_ticks_adjusted, ignore_index=True)
+    main_ticks_adjusted.to_csv('../data/data_mink_main_ticks_adjusted.csv', index=False)
+else:
+    print("No adjusted main ticks found.")
 
-issues_df = pd.concat(all_issues, ignore_index=True)
-issues_df.to_csv('../data/main_tick_issues.csv', index=False)
+if all_main_ticks:
+    main_ticks = pd.concat(all_main_ticks, ignore_index=True)
+    main_ticks.to_csv('../data/data_mink_main_ticks.csv', index=False)
+else:
+    print("No main ticks found.")
 
+if all_issues:
+    issues_df = pd.concat(all_issues, ignore_index=True)
+    issues_df.to_csv('../data/data_mink_main_ticks_issues.csv', index=False)
+else:
+    print("No issues found.")
 
 # End of file futures_data_mink/futures_data_mink_check_7.py

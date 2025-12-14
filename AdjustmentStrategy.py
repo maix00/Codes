@@ -34,6 +34,14 @@ class ValidityStatus(Enum):
     MANUALLY_OVERRIDDEN_VALID = "manually_overridden_valid"
     MANUALLY_OVERRIDDEN_INVALID = "manually_overridden_invalid"
 
+class AdjustmentDirection(Enum):
+    ADJUST_OLD = 0
+    ADJUST_NEW = 1
+
+class AdjustmentOperation(Enum):
+    MULTIPLICATIVE = 0
+    ADDITIVE = 1
+
 @staticmethod
 def calculate_settlement(rollover: 'ContractRollover',
                             old_price_field: str,
@@ -63,6 +71,10 @@ def calculate_settlement(rollover: 'ContractRollover',
 
 class AdjustmentStrategy(ABC):
     """复权策略基类"""
+
+    def __init__(self, adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
+        self.adjustment_direction = adjustment_direction
+        self.adjustment_operation: AdjustmentOperation = AdjustmentOperation.MULTIPLICATIVE
     
     @abstractmethod
     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
@@ -95,31 +107,59 @@ class AdjustmentStrategy(ABC):
         return copy.deepcopy(self)
     
     @staticmethod
-    def apply_multiplicative_adjustment(adjustment: float, results: list):
+    def apply_multiplicative_adjustment(adjustment: float, results: list) -> float:
+        adjustment_new = adjustment
         if adjustment is not None and len(results) > 0:
             for r in results:
-                if r.get('adjustment') is not None:
-                    r['adjustment'] *= adjustment
+                if r.get('val_adjust_old') is not None:
+                    r['val_adjust_old'] *= adjustment
+            # print(results)
+            max_r = max(
+                results,
+                key=lambda r: pd.to_datetime(r.get('rollover_reference_time', datetime.min))
+            )
+            if max_r.get('val_adjust_new') is not None:
+                adjustment_new = max_r['val_adjust_new'] * adjustment
+            return adjustment_new
+        else:
+            return adjustment_new
 
     @staticmethod
-    def apply_additive_adjustment(adjustment: float, results: list):
+    def apply_additive_adjustment(adjustment: float, results: list) -> float:
+        adjustment_new = adjustment
         if adjustment is not None and len(results) > 0:
             for r in results:
-                if r.get('adjustment') is not None:
-                    r['adjustment'] += adjustment
+                if r.get('val_adjust_old') is not None:
+                    r['val_adjust_old'] += adjustment
+            max_r = max(
+                results,
+                key=lambda r: pd.to_datetime(r.get('rollover_reference_time', datetime.min))
+            )
+            if max_r.get('val_adjust_new') is not None:
+                adjustment_new = max_r['val_adjust_new'] + adjustment
+            return adjustment_new
+        else:
+            return adjustment_new
 
-    def apply_adjustment_to_results(self, adjustment: float, results: list):
+    def apply_adjustment_to_results(self, adjustment: float, results: list) -> float:
         """
         基类方法：对子类开放，允许定向至不同的静态方法
         """
-        self.apply_multiplicative_adjustment(adjustment, results)
+        if self.adjustment_operation == AdjustmentOperation.ADDITIVE:
+            return self.apply_additive_adjustment(adjustment, results)
+        elif self.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
+            return self.apply_multiplicative_adjustment(adjustment, results)
+        else:
+            raise ValueError(f"未知的调整操作类型: {self.adjustment_operation}")
 
 class PercentageAdjustmentStrategy(AdjustmentStrategy):
     """百分比复权策略"""
     
     def __init__(self, use_window: bool = False, window_size: int = 120,
                  old_price_field: str = 'close', new_price_field: str = 'close',
-                 new_price_old_data_bool: bool = True):
+                 new_price_old_data_bool: bool = True,
+                 adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
+        super().__init__(adjustment_direction=adjustment_direction)
         self.use_window = use_window
         self.window_size = window_size
         self.old_price_field = old_price_field
@@ -189,7 +229,10 @@ class SpreadAdjustmentStrategy(AdjustmentStrategy):
     
     def __init__(self, use_window: bool = True, window_size: int = 120,
                  old_price_field: str = 'close', new_price_field: str = 'close',
-                 new_price_old_data_bool: bool = True):
+                 new_price_old_data_bool: bool = True,
+                 adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
+        super().__init__(adjustment_direction=adjustment_direction)
+        self.adjustment_operation = AdjustmentOperation.ADDITIVE
         self.use_window = use_window
         self.window_size = window_size
         self.old_price_field = old_price_field
@@ -229,15 +272,17 @@ class SpreadAdjustmentStrategy(AdjustmentStrategy):
     def get_name(self) -> str:
         return self.name
 
-    def apply_adjustment_to_results(self, adjustment: float, results: list):
-        self.apply_additive_adjustment(adjustment, results)
+    def apply_adjustment_to_results(self, adjustment: float, results: list) -> float:
+        return self.apply_additive_adjustment(adjustment, results)
 
 class WeightedAverageStrategy(AdjustmentStrategy):
     """加权平均复权策略 - 用于处理异常情况"""
     
     def __init__(self, weights_by_time: Optional[Dict[str, float]] = None,
                  old_price_field: str = 'close', new_price_field: str = 'close',
-                 time_field: str = 'datetime', new_price_old_data_bool: bool = True):
+                 time_field: str = 'datetime', new_price_old_data_bool: bool = True,
+                 adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
+        super().__init__(adjustment_direction=adjustment_direction)
         self.weights_by_time = weights_by_time or {}
         self.old_price_field = old_price_field
         self.new_price_field = new_price_field

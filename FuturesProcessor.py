@@ -361,7 +361,7 @@ class FuturesProcessorBase:
         print(f"  提取到 {len(result_data)} 条{'旧' if is_old else '新'}合约 {contract} 的数据")
         return result_data.reset_index(drop=True)
 
-    def get_adjustment_factor(self, strategy_selector: ProductPeriodStrategySelector) -> pd.DataFrame:
+    def get_adjustment_factor(self, strategy_selector: ProductPeriodStrategySelector, *args, **kwargs) -> pd.DataFrame:
         """
         根据ProductPeriodStrategySelector对象获取对应的adjustment_factor，并存储adjustmentstrategy信息
 
@@ -381,6 +381,15 @@ class FuturesProcessorBase:
             pd.DataFrame: 包含主力合约随时间变化的序列
         """
         raise NotImplementedError("generate_main_contract_series方法需要在子类中实现")
+    
+    def generate_main_contract_series_adjusted(self, *args, **kwargs) -> pd.DataFrame:
+        """
+        生成主力合约时间序列，返回DataFrame
+
+        Returns:
+            pd.DataFrame: 包含主力合约随时间变化的序列
+        """
+        raise NotImplementedError("generate_main_contract_series_adjusted方法需要在子类中实现")
 
 # class FuturesRolloverDetector_MainTick(FuturesProcessorBase):
 #     """基于main_tick数据表的合约切换点检测器"""
