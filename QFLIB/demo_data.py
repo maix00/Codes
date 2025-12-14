@@ -155,8 +155,14 @@ class SimpleMAStrategy(AbstractStrategy):
         
         # Use data handler to download last 20 minutes close prices and use them to compute the moving averages
         try:
-            long_ma_series = self.data_provider.historical_price(self.ticker, PriceField.Close, long_ma_len,
-                                                            frequency=Frequency.MIN_1)
+            if hasattr(self.data_provider, 'historical_price'):
+                long_ma_series = getattr(self.data_provider, 
+                                         'historical_price')(self.ticker, 
+                                                             PriceField.Close, 
+                                                             long_ma_len, 
+                                                             frequency=Frequency.MIN_1)
+            else:
+                raise AttributeError("Data provider does not support 'historical_price' method.")
         except ValueError:
             return  # Not enough data to compute the long MA yet
         
