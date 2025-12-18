@@ -163,6 +163,17 @@ class DataQualityChecker:
         for _, group_data in self.df.groupby('_group_id'):
             # 对每组数据应用_check_segment
             self._check_segment(group_data)
+
+        self.solution_mapping = {
+            DataIssueLabel.MISSING_VALUES: DataIssueSolution.NO_ACTION,
+            DataIssueLabel.ZERO_SEQUENCE_LONG: DataIssueSolution.FORWARD_FILL,
+            DataIssueLabel.ZERO_SEQUENCE_SHORT: DataIssueSolution.FORWARD_FILL,
+            DataIssueLabel.ZERO_SEQUENCE_ALL: DataIssueSolution.ERROR,
+            DataIssueLabel.ZERO_SEQUENCE_AT_START: DataIssueSolution.ERROR,
+            DataIssueLabel.ZERO_SEQUENCE_AT_VERY_START: DataIssueSolution.ERROR,
+            DataIssueLabel.ZERO_SEQUENCE_AT_END: DataIssueSolution.ERROR,
+            DataIssueLabel.OUTLIERS_MAD: DataIssueSolution.OUTLIERS_MEDIAN,
+        }
     
         # 根据issue_label分配solution_label
         self._assign_solution_by_issue_label()
@@ -180,18 +191,7 @@ class DataQualityChecker:
         根据issue_label为issues_df中的每一行分配对应的solution_label
         子类可以重写此方法以自定义分配逻辑
         """
-        solution_mapping = {
-            DataIssueLabel.MISSING_VALUES: DataIssueSolution.NO_ACTION,
-            DataIssueLabel.ZERO_SEQUENCE_LONG: DataIssueSolution.FORWARD_FILL,
-            DataIssueLabel.ZERO_SEQUENCE_SHORT: DataIssueSolution.FORWARD_FILL,
-            DataIssueLabel.ZERO_SEQUENCE_ALL: DataIssueSolution.ERROR,
-            DataIssueLabel.ZERO_SEQUENCE_AT_START: DataIssueSolution.ERROR,
-            DataIssueLabel.ZERO_SEQUENCE_AT_VERY_START: DataIssueSolution.ERROR,
-            DataIssueLabel.ZERO_SEQUENCE_AT_END: DataIssueSolution.ERROR,
-            DataIssueLabel.OUTLIERS_MAD: DataIssueSolution.OUTLIERS_MEDIAN,
-        }
-        
-        self.issues_df['SOLUTION_LABEL'] = self.issues_df['ISSUE_LABEL'].map(solution_mapping)
+        self.issues_df['SOLUTION_LABEL'] = self.issues_df['ISSUE_LABEL'].map(self.solution_mapping)
 
     def save_dataframe(self, filepath: str, format: str = 'csv', save_issues: bool = False) -> None:
         """
@@ -270,13 +270,21 @@ class DataQualityChecker:
         except:
             return None
         
-    def process_dataframe(self) -> Optional[pd.DataFrame]:
+    def process_dataframe(self, mapping: Optional[Dict[DataIssueLabel, Any]] = None) -> Optional[pd.DataFrame]:
         """
         处理DataFrame数据
-            
+
+        Args:
+            mapping (Optional[Dict[DataIssueLabel, DataIssueSolution]]): 问题标签到解决方案的映射，优先级高于默认solution_mapping
+
         Returns:
             处理后的DataFrame
         """
+
+        if mapping is None and self.solution_mapping:
+            mapping = self.solution_mapping
+        elif mapping is None and self.solution_mapping is None:
+            raise ValueError("No solution mapping provided for processing.")
         
         # 对每个组分别处理
         processed_groups = []
@@ -290,22 +298,23 @@ class DataQualityChecker:
                     # 标记问题行
                     if pd.notnull(issue['START_ROW']) and pd.notnull(issue['END_ROW']):
                         idx_range = range(int(issue['START_ROW']), int(issue['END_ROW']) + 1)
-                        df.loc[df.index.isin(idx_range), 'DATA_ISSUE'] = issue['ISSUE_LABEL']
-                        df.loc[df.index.isin(idx_range), 'DATA_ISSUE_SOLUTION'] = issue['SOLUTION_LABEL']
+                        issue_label = issue['ISSUE_LABEL']
+                        df.loc[df.index.isin(idx_range), 'DATA_ISSUE'] = issue_label
+                        df.loc[df.index.isin(idx_range), 'DATA_ISSUE_SOLUTION'] = mapping.get(issue_label, issue['SOLUTION_LABEL']) if mapping else issue['SOLUTION_LABEL']
             if df is not None and not df.empty:
                 processed_groups.append(df)
-        
+
         # 删除辅助列
         self.df = self.df.drop('_group_id', axis=1)
         if self.symbol_col == '[SYMBOL]':
             self.df = self.df.drop('symbol', axis=1)
-        
+
         # 将所有处理完的数据拼接返回
         if processed_groups:
             self.processed_df = pd.concat(processed_groups, ignore_index=True)
         else:
             self.processed_df = pd.DataFrame()
-        
+
         return self.processed_df
         
     def add_solution_handler(self, solution: DataIssueSolution, handler: Callable[[pd.DataFrame, int, int, str, Optional[Dict[str, Any]]], pd.DataFrame]) -> None:

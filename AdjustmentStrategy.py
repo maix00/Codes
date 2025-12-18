@@ -113,10 +113,9 @@ class AdjustmentStrategy(ABC):
             for r in results:
                 if r.get('val_adjust_old') is not None:
                     r['val_adjust_old'] *= adjustment
-            # print(results)
             max_r = max(
                 results,
-                key=lambda r: pd.to_datetime(r.get('rollover_reference_time', datetime.min))
+                key=lambda r: pd.to_datetime(r.get('rollover_date', datetime.min))
             )
             if max_r.get('val_adjust_new') is not None:
                 adjustment_new = max_r['val_adjust_new'] * adjustment
@@ -133,7 +132,7 @@ class AdjustmentStrategy(ABC):
                     r['val_adjust_old'] += adjustment
             max_r = max(
                 results,
-                key=lambda r: pd.to_datetime(r.get('rollover_reference_time', datetime.min))
+                key=lambda r: pd.to_datetime(r.get('rollover_date', datetime.min))
             )
             if max_r.get('val_adjust_new') is not None:
                 adjustment_new = max_r['val_adjust_new'] + adjustment

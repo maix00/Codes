@@ -30,19 +30,21 @@ import pandas as pd
 from tqdm import tqdm
 import os
 
-data_mink_path = '../data/data_mink_product_2025/'
-data_mink_path_main = '../data/data_mink_product_2025_main/'
+# data_mink_path = '../data/data_mink_product_2025/'
+data_mink_path_main = '../data/data_mink_main_dayk/'
 os.makedirs(data_mink_path_main, exist_ok=True)
 
-product_contract_start_end_path = '../data/wind_mapping.csv'
-product_contract_start_end = pd.read_csv(product_contract_start_end_path)
+product_contract_start_end_path = '../data/wind_mapping.parquet'
+product_contract_start_end = pd.read_parquet(product_contract_start_end_path)
 product_contract_start_end.columns.values[0] = "PRODUCT"
 product_contract_start_end.columns.values[1] = "CONTRACT"
+
+contract_dayk_path = '../data/data_dayk.parquet'
 
 product_id_list = product_contract_start_end[
     ~product_contract_start_end['PRODUCT'].str.contains('_S|-S')
 ]['PRODUCT'].str.split('.').str[0].unique().tolist()
-# product_id_list = ['BZ']
+# product_id_list = ['OI']
 
 all_adjustments = []
 all_main_ticks = []
@@ -58,7 +60,7 @@ for product_id in tqdm(product_id_list, desc="Processing products"):
             new_price_old_data_bool=True, use_window=False
         )
     })
-    detector.generate_main_contract_series_adjusted(path=data_mink_path, strategy_selector=strategy_selector)
+    detector.generate_main_contract_series_adjusted(path=contract_dayk_path, strategy_selector=strategy_selector)
     
     adjustment_df = detector.data_tables.get('adjustment_factors')
     if adjustment_df is not None and not adjustment_df.empty and len(adjustment_df) > 0:
@@ -66,8 +68,8 @@ for product_id in tqdm(product_id_list, desc="Processing products"):
     
     main_contract_series = detector.data_tables.get('main_tick')
     if main_contract_series is not None and not main_contract_series.empty:
-        output_path = f"{data_mink_path_main}{product_id}.csv"
-        main_contract_series.to_csv(output_path, index=False)
+        # output_path = f"{data_mink_path_main}{product_id}.csv"
+        # main_contract_series.to_csv(output_path, index=False)
         all_main_ticks.append(main_contract_series)
 
     main_contract_series = detector.data_tables.get('main_tick_adjusted')
@@ -93,13 +95,13 @@ else:
 
 if all_main_ticks:
     main_ticks = pd.concat(all_main_ticks, ignore_index=True)
-    main_ticks.to_csv('../data/data_mink_main_ticks.csv', index=False)
+    main_ticks.to_csv('../data/data_mink_main_dayk.csv', index=False)
 else:
     print("No main ticks found.")
 
 if all_issues:
     issues_df = pd.concat(all_issues, ignore_index=True)
-    issues_df.to_csv('../data/data_mink_main_ticks_issues.csv', index=False)
+    issues_df.to_csv('../data/data_mink_main_dayk_issues.csv', index=False)
 else:
     print("No issues found.")
 

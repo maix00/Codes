@@ -100,7 +100,7 @@ session_builder.set_portfolio_currency("CNY")  # Set the portfolio currency expl
 
 data_folder = Path("../data/data_mink_product_2025_main")
 file_names: Sequence[str] = [f.stem for f in data_folder.iterdir() if f.is_file() and f.suffix == ".csv"]
-file_names = "A"
+file_names = "BC"
 
 print("Start of data loading ...")
 MinkDataProvider = CSVDataProvider(
@@ -122,17 +122,20 @@ MinkDataProvider = CSVDataProvider(
 )
 print("End of data loading.")
 
-session_builder.set_data_provider(MinkDataProvider)
-session_builder.set_market_open_and_close_time({"hour": 21, "minute": 0}, {"hour": 15, "minute": 0})
-ts = session_builder.build(datetime(2025, 1, 10, 9, 1), datetime(2025, 5, 30, 15, 0))
+# session_builder.set_data_provider(MinkDataProvider)
+# session_builder.set_market_open_and_close_time({"hour": 21, "minute": 0}, {"hour": 15, "minute": 0})
+# ts = session_builder.build(datetime(2025, 1, 10, 9, 1), datetime(2025, 5, 30, 15, 0))
 
 # # l1 = MinkDataProvider.historical_price(MinkTicker("RS"), PriceField.Close, 85, datetime(2025, 7, 25, 10, 37))
-# l1 = MinkDataProvider.get_history(MinkTicker("RS"), ["close_price", "DATA_ISSUE", "DATA_ISSUE_SOLUTION"], datetime(2025, 7, 24, 14, 59), datetime(2025, 7, 25, 10, 37))
+l1 = MinkDataProvider.get_history(MinkTicker("BC"), ["close_price", "volume", "DATA_ISSUE", "DATA_ISSUE_SOLUTION"], datetime(2025, 1, 22, 14, 39), datetime(2025, 1, 22, 14, 45))
 
 # # l2 = MinkDataProvider.historical_price(MinkTicker("WR"), PriceField.Close, 5, datetime(2025, 7, 25, 9, 2))
 # l2 = MinkDataProvider.get_history(MinkTicker("WR"), ["close_price", "DATA_ISSUE", "DATA_ISSUE_SOLUTION"], datetime(2025, 7, 24, 14, 59), datetime(2025, 7, 25, 9, 2))
 
-# print(l1, l1.dtypes)
+# Print all columns of l1 DataFrame, regardless of width
+with pd.option_context('display.max_columns', None):
+    print(l1)
+    print(l1.dtypes)
 # print(l2, l2.dtypes)
         
 class SimpleMAStrategy(AbstractStrategy):
@@ -182,11 +185,11 @@ class SimpleMAStrategy(AbstractStrategy):
         self.broker.cancel_all_open_orders()
         self.broker.place_orders(orders)
 
-strategy = SimpleMAStrategy(ts, ticker)
-CalculateAndPlaceOrdersPeriodicEvent.set_frequency(Frequency.MIN_1)
-CalculateAndPlaceOrdersPeriodicEvent.set_start_and_end_time(
-    {"hour": 10, "minute": 0},
-    {"hour": 14, "minute": 0})
-strategy.subscribe(CalculateAndPlaceOrdersPeriodicEvent)
+# strategy = SimpleMAStrategy(ts, ticker)
+# CalculateAndPlaceOrdersPeriodicEvent.set_frequency(Frequency.MIN_1)
+# CalculateAndPlaceOrdersPeriodicEvent.set_start_and_end_time(
+#     {"hour": 10, "minute": 0},
+#     {"hour": 14, "minute": 0})
+# strategy.subscribe(CalculateAndPlaceOrdersPeriodicEvent)
 
-ts.start_trading()
+# ts.start_trading()
