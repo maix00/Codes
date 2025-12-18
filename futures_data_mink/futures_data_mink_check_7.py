@@ -35,15 +35,13 @@ data_mink_path_main = '../data/data_mink_main_dayk/'
 os.makedirs(data_mink_path_main, exist_ok=True)
 
 product_contract_start_end_path = '../data/wind_mapping.parquet'
-product_contract_start_end = pd.read_parquet(product_contract_start_end_path)
-product_contract_start_end.columns.values[0] = "PRODUCT"
-product_contract_start_end.columns.values[1] = "CONTRACT"
+PCSE = pd.read_parquet(product_contract_start_end_path)
+PCSE.columns.values[0] = "PRODUCT"
+PCSE.columns.values[1] = "CONTRACT"
 
 contract_dayk_path = '../data/data_dayk.parquet'
 
-product_id_list = product_contract_start_end[
-    ~product_contract_start_end['PRODUCT'].str.contains('_S|-S')
-]['PRODUCT'].str.split('.').str[0].unique().tolist()
+product_id_list = PCSE[~PCSE['PRODUCT'].str.contains('_S|-S')]['PRODUCT'].str.split('.').str[0].unique().tolist()
 # product_id_list = ['OI']
 
 all_adjustments = []
@@ -52,15 +50,15 @@ all_main_ticks_adjusted = []
 all_issues = []
 for product_id in tqdm(product_id_list, desc="Processing products"):
     detector = DataMinkBasics.FuturesProcessor()
-    data = product_contract_start_end[product_contract_start_end['PRODUCT'].str.startswith(product_id + '.')]
-    detector.add_data_table('product_contract_start_end', data)
+    detector.add_data_table('product_contract_start_end', PCSE[PCSE['PRODUCT'].str.startswith(product_id + '.')])
+    detector.add_data_table('contract_dayk', pd.read_parquet(contract_dayk_path))
     strategy_selector = ProductPeriodStrategySelector(default_strategy={
         "AdjustmentStrategy": PercentageAdjustmentStrategy(
             old_price_field='close_price', new_price_field='close_price', 
             new_price_old_data_bool=True, use_window=False
         )
     })
-    detector.generate_main_contract_series_adjusted(path=contract_dayk_path, strategy_selector=strategy_selector)
+    detector.generate_main_contract_series_adjusted(strategy_selector=strategy_selector)
     
     adjustment_df = detector.data_tables.get('adjustment_factors')
     if adjustment_df is not None and not adjustment_df.empty and len(adjustment_df) > 0:

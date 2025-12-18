@@ -157,8 +157,7 @@ class FuturesProcessor(FuturesProcessorBase):
             'contract_mink': ['trading_day', 'trade_time', 'open_price', 'highest_price', 'lowest_price', 'close_price', 'volume', 'unique_instrument_id'],
         }
     
-    def detect_rollover_points(self, 
-                               path: str,
+    def detect_rollover_points(self,
                                generate_main_contract_series: bool = False,
                                adjust_main_contract_series: bool = False,
                                strategy_selector: Optional[ProductPeriodStrategySelector] = None) -> List[ContractRollover]:
@@ -189,8 +188,6 @@ class FuturesProcessor(FuturesProcessorBase):
             generate_main_contract_series = True
             if strategy_selector is None:
                 raise ValueError("adjust_main_contract_series为True时，必须提供strategy_selector参数")
-            
-        self.add_data_table('contract_dayk', pd.read_parquet(path))
             
         # 检查'PRODUCT'列是否唯一
         df = self.data_tables.get('product_contract_start_end')
@@ -288,11 +285,11 @@ class FuturesProcessor(FuturesProcessorBase):
                 new_contract_UID = windcode_to_unique_instrument_id(new_contract, decade_str=calculate_decade_str(next_row))
 
                 if idx == 0:
-                    self.add_data_table("old_contract_tick", self.contract_data_loader(old_contract_UID, path))
-                    self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, path))
+                    self.add_data_table("old_contract_tick", self.contract_data_loader(old_contract_UID))
+                    self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID))
                 else:
                     self.data_tables['old_contract_tick'] = self.data_tables['new_contract_tick']
-                    self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, path))
+                    self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID))
                     
                 # 检查数据表是否为空，跳过不合法情况
                 old_tick_empty = self.data_tables["old_contract_tick"].empty
@@ -359,7 +356,7 @@ class FuturesProcessor(FuturesProcessorBase):
                 this_row = df.iloc[idx]
                 this_contract = this_row['CONTRACT']
                 this_contract_UID = windcode_to_unique_instrument_id(this_contract, decade_str=calculate_decade_str(this_row))
-                self.add_data_table("new_contract_tick", self.contract_data_loader(this_contract_UID, path))
+                self.add_data_table("new_contract_tick", self.contract_data_loader(this_contract_UID))
                 next_start_date = pd.to_datetime(this_row['STARTDATE'])
                 next_end_date = pd.to_datetime(f"{datetime.now().year + 1}-01-01")
                 new_trading_days = pd.to_datetime(self.data_tables['new_contract_tick']['trading_day'])
@@ -452,33 +449,31 @@ class FuturesProcessor(FuturesProcessorBase):
                 self.get_adjustment_factor(strategy_selector, adjust_main_contract_series=True)
         return rollovers
     
-    def generate_main_contract_series(self, path: str) -> pd.DataFrame:
-        self.detect_rollover_points(path, generate_main_contract_series=True)
+    def generate_main_contract_series(self) -> pd.DataFrame:
+        self.detect_rollover_points(generate_main_contract_series=True)
         return self.data_tables.get('main_tick', pd.DataFrame())
     
-    def generate_main_contract_series_adjusted(self, path: str, strategy_selector: ProductPeriodStrategySelector) -> pd.DataFrame:
-        self.detect_rollover_points(path, generate_main_contract_series=True, adjust_main_contract_series=True, strategy_selector=strategy_selector)
+    def generate_main_contract_series_adjusted(self, strategy_selector: ProductPeriodStrategySelector) -> pd.DataFrame:
+        self.detect_rollover_points(generate_main_contract_series=True, adjust_main_contract_series=True, strategy_selector=strategy_selector)
         return self.data_tables.get('main_tick_adjusted', pd.DataFrame())
     
-    def contract_data_loader(self, contract: str, path : str) -> pd.DataFrame:
+    def contract_data_loader(self, contract: str) -> pd.DataFrame:
         """
-        根据合约字符串和路径加载对应的DataFrame数据。
+        根据合约字符串加载对应的DataFrame数据。
 
         参数:
-            contract: 合约字符串（如 Wind 代码）
-            path: 数据文件所在目录
+            contract: 合约的unique_instrument_id字符串
 
         返回:
             对应合约的DataFrame数据
 
         说明:
-            本方法根据合约字符串生成unique_instrument_id，并拼接为csv文件名，从指定路径读取数据。
+            本方法从self.data_tables['contract_dayk']中筛选出unique_instrument_id等于contract的行。
+            如果数据表不存在或为空，则返回一个包含所需列的空DataFrame。
         """
-        if not os.path.exists(path):
-            # 返回一个包含 contract_dayk 所需列的空 DataFrame
-            required_cols = self.REQUIRED_COLUMNS['contract_dayk']
-            return pd.DataFrame(columns=required_cols)
-        df = self.data_tables['contract_dayk']
+        df = self.data_tables.get('contract_dayk')
+        if df is None or df.empty:
+            raise ValueError("'contract_dayk'数据表为空或不存在")
         return df[df['unique_instrument_id'] == contract].sort_values('trading_day')
     
     def get_adjustment_factor(self, strategy_selector: ProductPeriodStrategySelector,
