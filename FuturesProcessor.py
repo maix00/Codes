@@ -53,12 +53,8 @@ class FuturesProcessorBase:
         """
         # 设置每个表的列名映射，默认为空字典
         self.column_mapping = column_mapping or {}
-        # 存储所有合约的数据
-        self.contract_data: Dict[str, pd.DataFrame] = {}
         # 存储数据表
         self.data_tables: Dict[str, pd.DataFrame] = {}
-        # 存储Rollover点列表
-        self.rollover_points: List[ContractRollover] = []
         
         # 根据提供的data_tables设置数据表
         if data_tables:
@@ -284,7 +280,7 @@ class FuturesProcessorBase:
         # print(f"  数据表 {table_name} 列要求检查通过")
         return True
     
-    def detect_rollover_points(self, *args, **kwargs) -> List[ContractRollover]:
+    def detect_rollover_points(self, *args, **kwargs) -> Dict[str, List[ContractRollover]]:
         """
         检测合约切换点 - 基类方法，需要在子类中实现
 

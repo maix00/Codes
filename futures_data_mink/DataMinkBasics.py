@@ -27,7 +27,7 @@ from ContractRollover import ContractRollover
 from FuturesProcessor import FuturesProcessorBase 
 from StrategySelector import ProductPeriodStrategySelector
 from DataQualityChecker import DataQualityChecker, DataIssueLabel, DataIssueSolution
-from AdjustmentStrategy import AdjustmentStrategy, AdjustmentDirection, AdjustmentOperation
+from AdjustmentStrategy import PercentageAdjustmentStrategy, AdjustmentDirection, AdjustmentOperation
 import pandas as pd
 
 
@@ -135,7 +135,8 @@ def windcode_to_unique_instrument_id(windcode: str, decade_str: str = year_tens)
 class FuturesProcessor(FuturesProcessorBase):
     @property
     def EXPECTED_TABLE_NAMES(self) -> List[str]:
-        return ['product_contract_start_end', 'old_contract_tick', 'new_contract_tick', 'contract_dayk', 'contract_mink', 'main_tick']
+        return ['product_contract_start_end', 'old_contract_tick', 'new_contract_tick', 
+                'contract_dayk', 'contract_mink', 'main_tick', 'adjustment_factors', 'main_tick_adjusted']
     
     @property
     def EXPECTED_COLUMNS(self) -> Dict[str, List[str]]:
@@ -160,7 +161,7 @@ class FuturesProcessor(FuturesProcessorBase):
     def detect_rollover_points(self,
                                generate_main_contract_series: bool = False,
                                adjust_main_contract_series: bool = False,
-                               strategy_selector: Optional[ProductPeriodStrategySelector] = None) -> List[ContractRollover]:
+                               strategy_selector: Optional[ProductPeriodStrategySelector] = None) -> Dict[str, List[ContractRollover]]:
         """
         检测期货合约切换点（Rollover Points）。
         本方法根据合约起止日期表（'product_contract_start_end'）自动检测合约切换点，并加载切换点前后两个合约的行情数据。
@@ -189,9 +190,6 @@ class FuturesProcessor(FuturesProcessorBase):
             if strategy_selector is None:
                 raise ValueError("adjust_main_contract_series为True时，必须提供strategy_selector参数")
             
-        if not hasattr(self, 'rollover_points'):
-            self.rollover_points = []
-            
         # 检查'PRODUCT'列是否唯一
         df = self.data_tables.get('product_contract_start_end')
         if df is None or df.empty:
@@ -199,6 +197,11 @@ class FuturesProcessor(FuturesProcessorBase):
         if df['PRODUCT'].nunique() != 1:
             raise ValueError("'PRODUCT'列必须唯一")
         product_id = df['PRODUCT'].iloc[0]
+            
+        if not hasattr(self, 'rollover_points'):
+            self.rollover_points = {}
+        if product_id not in self.rollover_points:
+            self.rollover_points[product_id] = []
         
         # 检查'STARTDATE'和'ENDDATE'是否都有数据
         mask_start_null = df['STARTDATE'].isnull()
@@ -351,7 +354,7 @@ class FuturesProcessor(FuturesProcessorBase):
                     new_contract_start_datetime=None,
                     is_valid=is_valid
                 )
-                self.rollover_points.append(rollover)
+                self.rollover_points[product_id].append(rollover)
 
             else:
                 # new_product_bool为True的情况，表示只有一个合约
@@ -441,13 +444,15 @@ class FuturesProcessor(FuturesProcessorBase):
                     else:
                         main_contract_series_checked.append(pd.DataFrame())
         
-        self.main_tick_checked = main_contract_series_checked
+        if not hasattr(self, 'main_tick_checked') or not isinstance(self.main_tick_checked, dict):
+            self.main_tick_checked = {}
+        self.main_tick_checked[product_id] = main_contract_series_checked
 
         if generate_main_contract_series:
             self.data_tables['main_tick_issues'] = pd.concat(all_issues, ignore_index=True) if all_issues else pd.DataFrame()
             self.data_tables['main_tick'] = pd.concat(main_contract_series, ignore_index=True) if main_contract_series else pd.DataFrame()
             if adjust_main_contract_series and strategy_selector is not None:
-                self.get_adjustment_factor(strategy_selector, adjust_main_contract_series=True)
+                self.get_adjustment_factor(product_id, strategy_selector, adjust_main_contract_series=True)
         return self.rollover_points
     
     def generate_main_contract_series(self) -> pd.DataFrame:
@@ -478,7 +483,9 @@ class FuturesProcessor(FuturesProcessorBase):
             raise ValueError(f"'{table_name}'数据表为空或不存在")
         return df[df['unique_instrument_id'] == unique_instrument_id].sort_values('trading_day')
     
-    def get_adjustment_factor(self, strategy_selector: ProductPeriodStrategySelector,
+    def get_adjustment_factor(self, 
+                              product_id: Optional[str] = None,
+                              strategy_selector: Optional[ProductPeriodStrategySelector] = None,
                               adjust_main_contract_series: bool = False) -> pd.DataFrame:
         """
         计算并返回每个合约切换点的复权因子（adjustment_factor），并记录所用的AdjustmentStrategy信息。
@@ -489,93 +496,136 @@ class FuturesProcessor(FuturesProcessorBase):
         返回:
             pd.DataFrame: 每个切换点的复权因子及相关信息，包含product_id、old/new unique_instrument_id、切换日期和adjustment。
         """
+
+        if strategy_selector is None:
+            strategy_selector = ProductPeriodStrategySelector(default_strategy={
+                "AdjustmentStrategy": PercentageAdjustmentStrategy(
+                    old_price_field='close_price', new_price_field='close_price', 
+                    new_price_old_data_bool=True, use_window=False
+                )
+            })
+
         if not hasattr(strategy_selector, "default_strategy") or "AdjustmentStrategy" not in strategy_selector.default_strategy:
             raise ValueError("ProductPeriodStrategySelector.default_strategy 中缺少 'AdjustmentStrategy' 键")
 
         strategy = strategy_selector.default_strategy["AdjustmentStrategy"]
-        product_id = self.data_tables['product_contract_start_end']['PRODUCT'].iloc[0]
 
-        if adjust_main_contract_series and hasattr(self, 'main_tick_checked'):
-            if len(self.rollover_points) + 1 == len(self.main_tick_checked):
-                pass
-            else:
-                print(len(self.rollover_points), len(self.main_tick_checked))
-                raise ValueError(f"{product_id}: 调整主合约序列时，main_tick_checked的数量应比rollover_points多1")
+        if product_id is None:
+            df = self.data_tables.get('product_contract_start_end')
+            if df is None or df.empty:
+                raise ValueError("'product_contract_start_end'数据表为空或不存在")
+            product_id_list = sorted(df['PRODUCT'].unique().tolist())
+            if not product_id_list:
+                raise ValueError("'PRODUCT'列为空")
+        else:
+            product_id_list = [product_id]
 
-        results = []
-        for idx in range(len(self.rollover_points)):
-            rollover = self.rollover_points[idx]
-            strategy = strategy_selector.get_strategy(product_id, pd.to_datetime(str(rollover.new_contract_start_date)))['AdjustmentStrategy']
+        for product_id in product_id_list:
 
-            is_valid, validity_status = strategy.is_valid(rollover)
-            if is_valid:
-                adjustment_mul, adjustment_add = strategy.calculate_adjustment(rollover)
-                if strategy.adjustment_operation == AdjustmentOperation.ADDITIVE:
-                    adjustment = adjustment_add
-                elif strategy.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
-                    adjustment = adjustment_mul
+            if product_id is None:
+                continue
+
+            if hasattr(self, 'main_tick_checked'):
+                if isinstance(self.main_tick_checked, dict):
+                    main_tick_checked = self.main_tick_checked.get(product_id, [])
                 else:
-                    raise ValueError(f"未知的调整操作类型: {strategy.adjustment_operation}")
+                    raise ValueError("self.main_tick_checked应为字典类型，键为product_id")
             else:
-                adjustment = None
-            
-            adjustment_new = strategy.apply_adjustment_to_results(adjustment, results)
+                main_tick_checked = []
 
-            results.append({
-                'product_id': product_id,
-                'old_unique_instrument_id': rollover.old_contract,
-                'new_unique_instrument_id': rollover.new_contract,
-                'rollover_date': rollover.new_contract_start_date,
-                'adjustment_strategy': strategy.__class__.__name__,
-                'adjustment_operation': strategy.adjustment_operation.name,
-                'is_valid': is_valid,
-                'validity_status': validity_status,
-                'val_adjust_old': adjustment,
-                'val_adjust_new': adjustment_new
-            })
-            
+            # 获取rollover_points
+            if not hasattr(self, 'rollover_points'):
+                self.detect_rollover_points()
+            elif product_id not in self.rollover_points:
+                raise ValueError(f"{product_id}: 未检测到rollover_points")
+            rollover_points = self.rollover_points[product_id]
+
             if adjust_main_contract_series and hasattr(self, 'main_tick_checked'):
-                if adjustment is None:
-                    continue
-                # Ensure all 'trade_time' are <= rollover.new_contract_start_datetime
-                if 'trade_time' in self.main_tick_checked[idx].columns and rollover.new_contract_start_datetime is not None:
-                    trade_times = pd.to_datetime(self.main_tick_checked[idx]['trade_time'])
-                    rollover_time = pd.to_datetime(rollover.new_contract_start_datetime)
-                    if not trade_times.le(rollover_time).all():
-                        raise ValueError(
-                            f"{product_id}: main_tick_checked[{idx}]的'trade_time'列存在大于rollover.new_contract_start_datetime的值"
-                        )
-                if idx == len(self.rollover_points) - 1:
+                if len(rollover_points) + 1 == len(main_tick_checked):
                     pass
-                elif strategy.adjustment_direction == AdjustmentDirection.ADJUST_OLD:
-                    if self.main_tick_checked[idx].empty:
-                        pass
-                    elif strategy.adjustment_operation == AdjustmentOperation.ADDITIVE:
-                        self.main_tick_checked[idx][['open_price', 'highest_price', 'lowest_price', 'close_price']] += adjustment
+                else:
+                    print(len(rollover_points), len(main_tick_checked))
+                    raise ValueError(f"{product_id}: 调整主合约序列时，main_tick_checked的数量应比rollover_points多1")
+
+            results = []
+            for idx in range(len(rollover_points)):
+                rollover = rollover_points[idx]
+                strategy = strategy_selector.get_strategy(product_id, pd.to_datetime(str(rollover.new_contract_start_date)))['AdjustmentStrategy']
+
+                is_valid, validity_status = strategy.is_valid(rollover)
+                if is_valid:
+                    adjustment_mul, adjustment_add = strategy.calculate_adjustment(rollover)
+                    if strategy.adjustment_operation == AdjustmentOperation.ADDITIVE:
+                        adjustment = adjustment_add
                     elif strategy.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
-                        self.main_tick_checked[idx][['open_price', 'highest_price', 'lowest_price', 'close_price']] *= adjustment
-                    else:
-                        raise ValueError(f"未知的调整操作类型: {strategy.adjustment_operation}")
-                elif strategy.adjustment_direction == AdjustmentDirection.ADJUST_NEW:
-                    if self.main_tick_checked[idx+1].empty:
-                        pass
-                    elif strategy.adjustment_operation == AdjustmentOperation.ADDITIVE:
-                        self.main_tick_checked[idx+1][['open_price', 'highest_price', 'lowest_price', 'close_price']] -= adjustment_new
-                    elif strategy.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
-                        self.main_tick_checked[idx+1][['open_price', 'highest_price', 'lowest_price', 'close_price']] /= adjustment_new
+                        adjustment = adjustment_mul
                     else:
                         raise ValueError(f"未知的调整操作类型: {strategy.adjustment_operation}")
                 else:
-                    raise ValueError(f"未知的调整方向: {strategy.adjustment_direction}")
+                    adjustment = None
+                
+                adjustment_new = strategy.apply_adjustment_to_results(adjustment, results)
 
-        self.data_tables['adjustment_factors'] = pd.DataFrame(results)
+                results.append({
+                    'product_id': product_id,
+                    'old_unique_instrument_id': rollover.old_contract,
+                    'new_unique_instrument_id': rollover.new_contract,
+                    'rollover_date': rollover.new_contract_start_date,
+                    'adjustment_strategy': strategy.__class__.__name__,
+                    'adjustment_operation': strategy.adjustment_operation.name,
+                    'is_valid': is_valid,
+                    'validity_status': validity_status,
+                    'val_adjust_old': adjustment,
+                    'val_adjust_new': adjustment_new
+                })
+                
+                if adjust_main_contract_series and main_tick_checked:
+                    if adjustment is None:
+                        continue
+                    # Ensure all 'trade_time' are <= rollover.new_contract_start_datetime
+                    if 'trade_time' in main_tick_checked[idx].columns and rollover.new_contract_start_datetime is not None:
+                        trade_times = pd.to_datetime(main_tick_checked[idx]['trade_time'])
+                        rollover_time = pd.to_datetime(rollover.new_contract_start_datetime)
+                        if not trade_times.le(rollover_time).all():
+                            raise ValueError(
+                                f"{product_id}: main_tick_checked[{idx}]的'trade_time'列存在大于rollover.new_contract_start_datetime的值"
+                            )
+                    if idx == len(rollover_points) - 1:
+                        pass
+                    elif strategy.adjustment_direction == AdjustmentDirection.ADJUST_OLD:
+                        if main_tick_checked[idx].empty:
+                            pass
+                        elif strategy.adjustment_operation == AdjustmentOperation.ADDITIVE:
+                            main_tick_checked[idx][['open_price', 'highest_price', 'lowest_price', 'close_price']] += adjustment
+                        elif strategy.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
+                            main_tick_checked[idx][['open_price', 'highest_price', 'lowest_price', 'close_price']] *= adjustment
+                        else:
+                            raise ValueError(f"未知的调整操作类型: {strategy.adjustment_operation}")
+                    elif strategy.adjustment_direction == AdjustmentDirection.ADJUST_NEW:
+                        if main_tick_checked[idx+1].empty:
+                            pass
+                        elif strategy.adjustment_operation == AdjustmentOperation.ADDITIVE:
+                            main_tick_checked[idx+1][['open_price', 'highest_price', 'lowest_price', 'close_price']] -= adjustment_new
+                        elif strategy.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
+                            main_tick_checked[idx+1][['open_price', 'highest_price', 'lowest_price', 'close_price']] /= adjustment_new
+                        else:
+                            raise ValueError(f"未知的调整操作类型: {strategy.adjustment_operation}")
+                    else:
+                        raise ValueError(f"未知的调整方向: {strategy.adjustment_direction}")
 
-        if adjust_main_contract_series and hasattr(self, 'main_tick_checked'):
-            self.main_tick_checked = [df for df in self.main_tick_checked if not df.empty]
-            if self.main_tick_checked:
-                self.data_tables['main_tick_adjusted'] = pd.concat(self.main_tick_checked, ignore_index=True)
+            if 'adjustment_factors' in self.data_tables and not self.data_tables['adjustment_factors'].empty:
+                self.data_tables['adjustment_factors'] = pd.concat(
+                    [self.data_tables['adjustment_factors'], pd.DataFrame(results)],
+                    ignore_index=True)
             else:
-                self.data_tables['main_tick_adjusted'] = pd.DataFrame()
+                self.data_tables['adjustment_factors'] = pd.DataFrame(results)
+
+            if adjust_main_contract_series and main_tick_checked:
+                main_tick_checked = [df for df in main_tick_checked if not df.empty]
+                if main_tick_checked:
+                    self.data_tables['main_tick_adjusted'] = pd.concat(main_tick_checked, ignore_index=True)
+                else:
+                    self.data_tables['main_tick_adjusted'] = pd.DataFrame()
 
         return self.data_tables['adjustment_factors']
     
