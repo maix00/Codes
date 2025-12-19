@@ -29,6 +29,7 @@ from StrategySelector import ProductPeriodStrategySelector
 from DataQualityChecker import DataQualityChecker, DataIssueLabel, DataIssueSolution
 from AdjustmentStrategy import PercentageAdjustmentStrategy, AdjustmentDirection, AdjustmentOperation
 import pandas as pd
+from tqdm import tqdm
 
 
 # 交易所代码映射表
@@ -158,7 +159,171 @@ class FuturesProcessor(FuturesProcessorBase):
             'contract_mink': ['trading_day', 'trade_time', 'open_price', 'highest_price', 'lowest_price', 'close_price', 'volume', 'unique_instrument_id'],
         }
     
+    def detect_rollover_points2(self) -> Dict[str, List[ContractRollover]]:
+
+        # 获取所有产品的合约起止日期表
+        all_df = self.data_tables.get('product_contract_start_end')
+        if all_df is None or all_df.empty:
+            raise ValueError("'product_contract_start_end'数据表为空或不存在")
+        
+        # 检查是否已经有product_id_list属性
+        if not hasattr(self, 'product_id_list'):
+            self.product_id_list = sorted(all_df['PRODUCT'].unique().tolist())
+        if not self.product_id_list:
+            raise ValueError("'PRODUCT'列为空")
+        
+        # 遍历每个产品，检测展期点
+        for product_id in tqdm(self.product_id_list, desc="Detecting rollover points"):
+
+            # 获取该产品的合约起止日期数据
+            df = all_df[all_df['PRODUCT'] == product_id].reset_index(drop=True)
+            
+            # 初始化该产品的展期点列表
+            if not hasattr(self, 'rollover_points'):
+                self.rollover_points = {}
+            if product_id not in self.rollover_points:
+                self.rollover_points[product_id] = []
+            
+            # 检查'STARTDATE'和'ENDDATE'是否都有数据
+            mask_start_null = df['STARTDATE'].isnull()
+            mask_end_null = df['ENDDATE'].isnull()
+            both_null = mask_start_null & mask_end_null
+            one_null = mask_start_null ^ mask_end_null
+
+            # 删除'STARTDATE'和'ENDDATE'都为空的行
+            df = df.drop(df.index[both_null])
+            if one_null.any():
+                raise ValueError(f"{product_id}: 存在'STARTDATE'或'ENDDATE'有一个为空的行")
+            
+            # 按'STARTDATE'排序
+            df = df.sort_values('STARTDATE').reset_index(drop=True)
+
+            # 将STARTDATE和ENDDATE全部转为date格式（兼容float/int/str）
+            def to_date(val):
+                if pd.isnull(val):
+                    return pd.NaT
+                if isinstance(val, (int, float)):
+                    val = int(val)
+                    return pd.to_datetime(str(val)).date()
+                else:
+                    return pd.to_datetime(val).date()
+
+            df['STARTDATE'] = df['STARTDATE'].map(to_date)
+            df['ENDDATE'] = df['ENDDATE'].map(to_date)
+
+            # 打印所有行
+            # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+            #     if product_id == 'OI.CZC':
+            #         print(df)
+
+            # 遍历所有行，检查CONTRACT重复且ENDDATE顺序
+            drop_indices = []
+            for idx in range(len(df) - 1):
+                curr_end = df.iloc[idx]['ENDDATE']
+                next_start = df.iloc[idx + 1]['STARTDATE']
+                if curr_end >= next_start:
+                    raise ValueError(f"{product_id}: 第{idx}行的ENDDATE不在下一行的STARTDATE之前: {curr_end} >= {next_start}")
+                curr_contract = windcode_to_shortened_windcode(df.iloc[idx]['CONTRACT'])
+                next_contract = windcode_to_shortened_windcode(df.iloc[idx + 1]['CONTRACT'])
+                if curr_contract == next_contract:
+                    # 把下一行的STARTDATE改成当前行的STARTDATE，然后删除当前行
+                    df.at[idx + 1, 'STARTDATE'] = df.iloc[idx]['STARTDATE']
+                    drop_indices.append(idx)
+            if drop_indices:
+                df = df.drop(df.index[drop_indices]).reset_index(drop=True)
+
+            def calculate_decade_str(row):
+                enddate_str = str(row['ENDDATE'])
+                if len(enddate_str) < 4:
+                    raise ValueError(f"{product_id}: ENDDATE格式不正确，无法提取decade_str")
+                contract_digits = ''.join([c for c in row['CONTRACT'] if c.isdigit()])
+                if len(contract_digits) < 3 or len(contract_digits) > 4:
+                    raise ValueError(f"{product_id}: CONTRACT格式不正确，无法提取decade_str")
+                contract_third_last = contract_digits[-3]
+                if contract_third_last == '0' and enddate_str[3] != '0':
+                    return str(int(enddate_str[2]) + 1)
+                else:
+                    return enddate_str[2]
+            
+            # 遍历所有行，检测展期点
+            for idx in range(len(df)):
+                # 
+                if idx + 1 >= len(df):
+                    continue
+
+                is_valid = True
+
+                this_row = df.iloc[idx]
+                next_row = df.iloc[idx + 1]
+
+                old_contract = this_row['CONTRACT']
+                new_contract = next_row['CONTRACT']
+
+                old_contract_UID = windcode_to_unique_instrument_id(old_contract, decade_str=calculate_decade_str(this_row))
+                new_contract_UID = windcode_to_unique_instrument_id(new_contract, decade_str=calculate_decade_str(next_row))
+
+                if idx == 0:
+                    self.add_data_table("old_contract_tick", self.contract_data_loader(old_contract_UID, 'contract_dayk'))
+                    self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, 'contract_dayk'))
+                else:
+                    self.data_tables['old_contract_tick'] = self.data_tables['new_contract_tick']
+                    self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, 'contract_dayk'))
+                    
+                # 检查数据表是否为空，跳过不合法情况
+                old_tick_empty = self.data_tables["old_contract_tick"].empty
+                new_tick_empty = self.data_tables["new_contract_tick"].empty
+                if old_tick_empty and new_tick_empty:
+                    is_valid = False
+                if not old_tick_empty and new_tick_empty:
+                    raise ValueError(f"{product_id}: 第{idx}行: old_contract_tick非空但new_contract_tick为空，不合法")
+                
+                this_start_date = pd.to_datetime(this_row['STARTDATE'])
+                this_end_date = pd.to_datetime(this_row['ENDDATE'])
+                next_start_date = pd.to_datetime(next_row['STARTDATE'])
+                next_end_date = pd.to_datetime(next_row['ENDDATE'])
+
+                old_trading_days = pd.to_datetime(self.data_tables['old_contract_tick']['trading_day'])
+                new_trading_days = pd.to_datetime(self.data_tables['new_contract_tick']['trading_day'])
+                
+                # 找到小于等于this_end_date的最大日期
+                mask = pd.Series([False] * len(old_trading_days), index=old_trading_days.index)
+                if not old_trading_days.empty:
+                    mask = old_trading_days == old_trading_days[old_trading_days <= this_end_date].max()
+                if mask.any():
+                    old_contract_old_data = self.data_tables['old_contract_tick'][mask].iloc[[-1]]
+                else:
+                    old_contract_old_data = pd.DataFrame()
+                    is_valid = False
+                
+                # 找到小于等于this_end_date的最大日期
+                mask_new = pd.Series([False] * len(new_trading_days), index=new_trading_days.index)
+                if not new_trading_days.empty:
+                    mask_new = new_trading_days == new_trading_days[new_trading_days <= this_end_date].max()
+                if mask_new.any():
+                    new_contract_old_data = self.data_tables['new_contract_tick'][mask_new].iloc[[-1]]
+                else:
+                    new_contract_old_data = pd.DataFrame()
+                    is_valid = False
+                
+                rollover = ContractRollover(
+                    old_contract=old_contract_UID,
+                    new_contract=new_contract_UID,
+                    old_contract_old_data=old_contract_old_data,
+                    old_contract_new_data=pd.DataFrame(),
+                    new_contract_old_data=new_contract_old_data,
+                    new_contract_new_data=pd.DataFrame(),
+                    old_contract_end_date=this_end_date.date(),
+                    old_contract_end_datetime=None,
+                    new_contract_start_date=next_start_date.date(),
+                    new_contract_start_datetime=None,
+                    is_valid=is_valid
+                )
+                self.rollover_points[product_id].append(rollover)
+        return self.rollover_points
+    
     def detect_rollover_points(self,
+                               mink_folder_path: Optional[str] = None,
+                               main_contract_series_mink_bool: bool = False,
                                generate_main_contract_series: bool = False,
                                adjust_main_contract_series: bool = False,
                                strategy_selector: Optional[ProductPeriodStrategySelector] = None) -> Dict[str, List[ContractRollover]]:
@@ -190,16 +355,21 @@ class FuturesProcessor(FuturesProcessorBase):
             if strategy_selector is None:
                 raise ValueError("adjust_main_contract_series为True时，必须提供strategy_selector参数")
             
+        if main_contract_series_mink_bool and mink_folder_path is None:
+            raise ValueError("main_contract_series_mink_bool为True时，必须提供mink_folder_path参数")
+            
         all_df = self.data_tables.get('product_contract_start_end')
         if all_df is None or all_df.empty:
             raise ValueError("'product_contract_start_end'数据表为空或不存在")
-        product_id_list = sorted(all_df['PRODUCT'].unique().tolist())
-        if not product_id_list:
+        self.product_id_list = sorted(all_df['PRODUCT'].unique().tolist())
+        if not self.product_id_list:
             raise ValueError("'PRODUCT'列为空")
         
-        for product_id in product_id_list:
+        all_issues = []
+        main_contract_series = []
+        for product_id in tqdm(self.product_id_list, desc="Detecting rollover points"):
 
-            df = all_df[all_df['PRODUCT'] == product_id].copy().reset_index(drop=True)
+            df = all_df[all_df['PRODUCT'] == product_id].reset_index(drop=True)
             
             if not hasattr(self, 'rollover_points'):
                 self.rollover_points = {}
@@ -266,10 +436,8 @@ class FuturesProcessor(FuturesProcessorBase):
                     return str(int(enddate_str[2]) + 1)
                 else:
                     return enddate_str[2]
-                    
-            main_contract_series = []
+            
             main_contract_series_checked = []
-            all_issues = []
             for idx in range(len(df)):
 
                 new_product_bool = False
@@ -335,22 +503,13 @@ class FuturesProcessor(FuturesProcessorBase):
                         new_contract_old_data = pd.DataFrame()
                         is_valid = False
                     
-                    # 找到等于next_start_date的日期
-                    mask_new_next = new_trading_days == next_start_date
-                    if mask_new_next.any():
-                        new_contract_new_data = self.data_tables['new_contract_tick'][mask_new_next].iloc[[0]]
-                    else:
-                        new_contract_new_data = pd.DataFrame()
-                        is_valid = False
-                    
                     rollover = ContractRollover(
                         old_contract=old_contract_UID,
                         new_contract=new_contract_UID,
-                        datetime_col_name='trade_time',
                         old_contract_old_data=old_contract_old_data,
                         old_contract_new_data=pd.DataFrame(),
                         new_contract_old_data=new_contract_old_data,
-                        new_contract_new_data=new_contract_new_data,
+                        new_contract_new_data=pd.DataFrame(),
                         old_contract_end_date=this_end_date.date(),
                         old_contract_end_datetime=None,
                         new_contract_start_date=next_start_date.date(),
@@ -363,8 +522,8 @@ class FuturesProcessor(FuturesProcessorBase):
                     # new_product_bool为True的情况，表示只有一个合约
                     this_row = df.iloc[idx]
                     this_contract = this_row['CONTRACT']
-                    this_contract_UID = windcode_to_unique_instrument_id(this_contract, decade_str=calculate_decade_str(this_row))
-                    self.add_data_table("new_contract_tick", self.contract_data_loader(this_contract_UID, 'contract_dayk'))
+                    old_contract_UID = windcode_to_unique_instrument_id(this_contract, decade_str=calculate_decade_str(this_row))
+                    self.add_data_table("new_contract_tick", self.contract_data_loader(old_contract_UID, 'contract_dayk'))
                     next_start_date = pd.to_datetime(this_row['STARTDATE'])
                     next_end_date = pd.to_datetime(f"{datetime.now().year + 1}-01-01")
                     new_trading_days = pd.to_datetime(self.data_tables['new_contract_tick']['trading_day'])
@@ -372,8 +531,22 @@ class FuturesProcessor(FuturesProcessorBase):
                     this_start_date = next_start_date
                     this_end_date = next_end_date
                     old_trading_days = new_trading_days
+                    new_contract_UID = old_contract_UID
 
                 if generate_main_contract_series:
+                    if main_contract_series_mink_bool:
+                        if new_product_bool:
+                            self.add_data_table("new_contract_tick", self.contract_data_loader(old_contract_UID, 'contract_mink', mink_folder_path))
+                            new_trading_days = pd.to_datetime(self.data_tables['new_contract_tick']['trading_day'])
+                        else:
+                            if idx == 0:
+                                self.add_data_table("old_contract_tick", self.contract_data_loader(old_contract_UID, 'contract_mink', mink_folder_path))
+                                self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, 'contract_mink', mink_folder_path))
+                            else:
+                                self.data_tables['old_contract_tick'] = self.data_tables['new_contract_tick']
+                                self.add_data_table("new_contract_tick", self.contract_data_loader(new_contract_UID, 'contract_mink', mink_folder_path))
+                            old_trading_days = pd.to_datetime(self.data_tables['old_contract_tick']['trading_day'])
+                            new_trading_days = pd.to_datetime(self.data_tables['new_contract_tick']['trading_day'])
                     # 将第一个1之前的0也改成1，并返回是否存在这样的0
                     def mask_alter_zero_before_first_one(mask: pd.Series) -> Tuple[pd.Series, bool]:
                         mask_arr = mask.values
@@ -451,34 +624,23 @@ class FuturesProcessor(FuturesProcessorBase):
                 self.main_tick_checked = {}
             self.main_tick_checked[product_id] = main_contract_series_checked
 
-            if generate_main_contract_series:
-                if all_issues:
-                    if 'main_tick_issues' in self.data_tables and not self.data_tables['main_tick_issues'].empty:
-                        self.data_tables['main_tick_issues'] = pd.concat(
-                            [self.data_tables['main_tick_issues'], pd.concat(all_issues, ignore_index=True)],
-                            ignore_index=True)
-                    else:
-                        self.data_tables['main_tick_issues'] = pd.concat(all_issues, ignore_index=True)
-                if main_contract_series:
-                    if 'main_tick' in self.data_tables and not self.data_tables['main_tick'].empty:
-                        self.data_tables['main_tick'] = pd.concat(
-                            [self.data_tables['main_tick'], pd.concat(main_contract_series, ignore_index=True)],
-                            ignore_index=True)
-                    else:
-                        self.data_tables['main_tick'] = pd.concat(main_contract_series, ignore_index=True)
-                if adjust_main_contract_series and strategy_selector is not None:
-                    self.get_adjustment_factor(product_id, strategy_selector, adjust_main_contract_series=True)
+        if generate_main_contract_series:
+            self.data_tables['main_tick_issues'] = pd.concat(all_issues, ignore_index=True) if all_issues else pd.DataFrame()
+            self.data_tables['main_tick'] = pd.concat(main_contract_series, ignore_index=True) if main_contract_series else pd.DataFrame()
+            if adjust_main_contract_series and strategy_selector is not None:
+                self.get_adjustment_factor(strategy_selector=strategy_selector, adjust_main_contract_series=True)
         return self.rollover_points
     
-    def generate_main_contract_series(self) -> pd.DataFrame:
-        self.detect_rollover_points(generate_main_contract_series=True)
+    def generate_main_contract_series(self, mink_folder_path: Optional[str] = None, mink_bool: bool = True) -> pd.DataFrame:
+        self.detect_rollover_points(mink_folder_path=mink_folder_path, main_contract_series_mink_bool=mink_bool, generate_main_contract_series=True)
         return self.data_tables.get('main_tick', pd.DataFrame())
     
-    def generate_main_contract_series_adjusted(self, strategy_selector: ProductPeriodStrategySelector) -> pd.DataFrame:
-        self.detect_rollover_points(generate_main_contract_series=True, adjust_main_contract_series=True, strategy_selector=strategy_selector)
+    def generate_main_contract_series_adjusted(self, strategy_selector: ProductPeriodStrategySelector, mink_folder_path: Optional[str] = None, mink_bool: bool = True) -> pd.DataFrame:
+        self.detect_rollover_points(mink_folder_path=mink_folder_path, main_contract_series_mink_bool=mink_bool, generate_main_contract_series=True, 
+                                    adjust_main_contract_series=True, strategy_selector=strategy_selector)
         return self.data_tables.get('main_tick_adjusted', pd.DataFrame())
     
-    def contract_data_loader(self, unique_instrument_id: str, table_name: str) -> pd.DataFrame:
+    def contract_data_loader(self, unique_instrument_id: str, table_name: str, mink_folder_path: Optional[str] = None) -> pd.DataFrame:
         """
         根据合约的unique_instrument_id加载对应的行情数据。
 
@@ -493,10 +655,24 @@ class FuturesProcessor(FuturesProcessorBase):
             本方法会从self.data_tables[table_name]中筛选出unique_instrument_id等于指定值的所有数据行。
             若数据表不存在或为空，则抛出异常。
         """
-        df = self.data_tables.get(table_name)
-        if df is None or df.empty:
-            raise ValueError(f"'{table_name}'数据表为空或不存在")
-        return df[df['unique_instrument_id'] == unique_instrument_id].sort_values('trading_day')
+        if table_name == 'contract_dayk':
+            df = self.data_tables.get(table_name)
+            if df is None or df.empty:
+                raise ValueError(f"'{table_name}'数据表为空或不存在")
+            return df[df['unique_instrument_id'] == unique_instrument_id].sort_values('trading_day')
+        elif table_name == 'contract_mink':
+            file_name = unique_instrument_id + '.csv'
+            if mink_folder_path is None:
+                raise ValueError("mink_folder_path参数不能为空")
+            file_path = os.path.join(mink_folder_path, file_name)
+            if not os.path.exists(file_path):
+                # 返回一个包含 old_contract_tick 所需列的空 DataFrame
+                required_cols = self.REQUIRED_COLUMNS['old_contract_tick']
+                # print(f"警告: 文件 {file_path} 不存在，返回空DataFrame。")
+                return pd.DataFrame(columns=required_cols)
+            return pd.read_csv(file_path)
+        else:
+            raise ValueError(f"未知的table_name: {table_name}")
     
     def get_adjustment_factor(self, 
                               product_id: Optional[str] = None,
@@ -535,7 +711,7 @@ class FuturesProcessor(FuturesProcessorBase):
         else:
             product_id_list = [product_id]
 
-        for product_id in product_id_list:
+        for product_id in tqdm(product_id_list, desc="Calculating adjustment factors"):
 
             if product_id is None:
                 continue
@@ -630,7 +806,7 @@ class FuturesProcessor(FuturesProcessorBase):
 
             if 'adjustment_factors' in self.data_tables and not self.data_tables['adjustment_factors'].empty:
                 self.data_tables['adjustment_factors'] = pd.concat(
-                    [self.data_tables['adjustment_factors'], pd.DataFrame(results)],
+                    [self.data_tables['adjustment_factors'], pd.DataFrame(results).dropna(axis=1, how='all')],
                     ignore_index=True)
             else:
                 self.data_tables['adjustment_factors'] = pd.DataFrame(results)

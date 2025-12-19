@@ -27,10 +27,10 @@ import DataMinkBasics
 from StrategySelector import ProductPeriodStrategySelector
 from AdjustmentStrategy import PercentageAdjustmentStrategy
 import pandas as pd
-from tqdm import tqdm
+# from tqdm import tqdm
 import os
 
-# data_mink_path = '../data/data_mink_product_2025/'
+data_mink_path = '../data/data_mink_product_2025/'
 data_mink_path_main = '../data/data_mink_main_dayk/'
 os.makedirs(data_mink_path_main, exist_ok=True)
 
@@ -41,66 +41,36 @@ PCSE.columns.values[1] = "CONTRACT"
 
 contract_dayk_path = '../data/data_dayk.parquet'
 
-product_id_list = PCSE[~PCSE['PRODUCT'].str.contains('_S|-S')]['PRODUCT'].str.split('.').str[0].unique().tolist()
-# product_id_list = ['OI']
+# product_id_list = PCSE[~PCSE['PRODUCT'].str.contains('_S|-S')]['PRODUCT'].str.split('.').str[0].unique().tolist()
+# # product_id_list = ['OI']
 
-all_adjustments = []
-all_main_ticks = []
-all_main_ticks_adjusted = []
-all_issues = []
-for product_id in tqdm(product_id_list, desc="Processing products"):
-    detector = DataMinkBasics.FuturesProcessor()
-    detector.add_data_table('product_contract_start_end', PCSE[PCSE['PRODUCT'].str.startswith(product_id + '.')])
-    detector.add_data_table('contract_dayk', pd.read_parquet(contract_dayk_path))
-    strategy_selector = ProductPeriodStrategySelector(default_strategy={
-        "AdjustmentStrategy": PercentageAdjustmentStrategy(
-            old_price_field='close_price', new_price_field='close_price', 
-            new_price_old_data_bool=True, use_window=False
-        )
-    })
-    detector.generate_main_contract_series_adjusted(strategy_selector=strategy_selector)
-    
-    adjustment_df = detector.data_tables.get('adjustment_factors')
-    if adjustment_df is not None and not adjustment_df.empty and len(adjustment_df) > 0:
-        all_adjustments.append(adjustment_df)
-    
-    main_contract_series = detector.data_tables.get('main_tick')
-    if main_contract_series is not None and not main_contract_series.empty:
-        # output_path = f"{data_mink_path_main}{product_id}.csv"
-        # main_contract_series.to_csv(output_path, index=False)
-        all_main_ticks.append(main_contract_series)
+detector = DataMinkBasics.FuturesProcessor()
+detector.add_data_table('product_contract_start_end', PCSE[~PCSE['PRODUCT'].str.contains('_S')])
+detector.add_data_table('contract_dayk', pd.read_parquet(contract_dayk_path))
+strategy_selector = ProductPeriodStrategySelector(default_strategy={
+    "AdjustmentStrategy": PercentageAdjustmentStrategy(
+        old_price_field='close_price', new_price_field='close_price', 
+        new_price_old_data_bool=True, use_window=False
+    )
+})
+detector.generate_main_contract_series_adjusted(mink_folder_path=data_mink_path, strategy_selector=strategy_selector)
 
-    main_contract_series = detector.data_tables.get('main_tick_adjusted')
-    if main_contract_series is not None and not main_contract_series.empty:
-        all_main_ticks_adjusted.append(main_contract_series)
-    
-    main_contract_series_issue = detector.data_tables.get('main_tick_issues')
-    if main_contract_series_issue is not None and not main_contract_series_issue.empty:
-        all_issues.append(main_contract_series_issue)
-
-# 拼接所有结果并输出到csvs
-if all_adjustments:
-    adjustments_df = pd.concat([df.dropna(axis=1, how='all') for df in all_adjustments], ignore_index=True)
-    adjustments_df.to_csv('../data/data_mink_rollover_adjustments.csv', index=False)
+adjustment_df = detector.data_tables.get('adjustment_factors')
+if adjustment_df is not None and not adjustment_df.empty and len(adjustment_df) > 0:
+    adjustment_df.to_csv('../data/rollover_adjustments.csv', index=False)
 else:
-    print("No adjustments found.")
+    print("No adjustment factors generated.")
 
-if all_main_ticks_adjusted:
-    main_ticks_adjusted = pd.concat(all_main_ticks_adjusted, ignore_index=True)
-    main_ticks_adjusted.to_csv('../data/data_mink_main_ticks_adjusted.csv', index=False)
+issues_df = detector.data_tables.get('main_tick_issues')
+if issues_df is not None and not issues_df.empty and len(issues_df) > 0:
+    issues_df.to_csv('../data/main_mink_issues.csv', index=False)
 else:
-    print("No adjusted main ticks found.")
+    print("No main tick issues detected.")
 
-if all_main_ticks:
-    main_ticks = pd.concat(all_main_ticks, ignore_index=True)
-    main_ticks.to_csv('../data/data_mink_main_dayk.csv', index=False)
+main_ticks_adjusted = detector.data_tables.get('main_tick_adjusted')
+if main_ticks_adjusted is not None and not main_ticks_adjusted.empty and len(main_ticks_adjusted) > 0:
+    main_ticks_adjusted.to_csv('../data/main_mink_adjusted.csv', index=False)
 else:
-    print("No main ticks found.")
-
-if all_issues:
-    issues_df = pd.concat(all_issues, ignore_index=True)
-    issues_df.to_csv('../data/data_mink_main_dayk_issues.csv', index=False)
-else:
-    print("No issues found.")
+    print("No main tick adjusted data available.")
 
 # End of file futures_data_mink/futures_data_mink_check_7.py
