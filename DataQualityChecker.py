@@ -304,16 +304,16 @@ class DataQualityChecker:
             if df is not None and not df.empty:
                 processed_groups.append(df)
 
-        # 删除辅助列
-        self.df = self.df.drop('_group_id', axis=1)
-        if self.symbol_col == '[SYMBOL]':
-            self.df = self.df.drop('symbol', axis=1)
-
         # 将所有处理完的数据拼接返回
         if processed_groups:
             self.processed_df = pd.concat(processed_groups, ignore_index=True)
         else:
             self.processed_df = pd.DataFrame()
+
+        # 删除辅助列
+        self.processed_df = self.processed_df.drop('_group_id', axis=1)
+        if self.symbol_col == '[SYMBOL]':
+            self.processed_df = self.processed_df.drop('symbol', axis=1)
 
         return self.processed_df
         

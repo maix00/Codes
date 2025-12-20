@@ -30,6 +30,7 @@ class ValidityStatus(Enum):
     VALID = "valid"
     INVALID_ZERO_DIVISION = "invalid_zero_division"
     INSUFFICIENT_DATA = "insufficient_data"
+    LATER_INSUFFICIENT_DATA = "later_insufficient_data"
     NEGATIVE_PRICES = "negative_prices"
     MANUALLY_OVERRIDDEN_VALID = "manually_overridden_valid"
     MANUALLY_OVERRIDDEN_INVALID = "manually_overridden_invalid"
@@ -75,6 +76,7 @@ class AdjustmentStrategy(ABC):
     def __init__(self, adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
         self.adjustment_direction = adjustment_direction
         self.adjustment_operation: AdjustmentOperation = AdjustmentOperation.MULTIPLICATIVE
+        self.description: Optional[str] = None
     
     @abstractmethod
     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
@@ -108,34 +110,38 @@ class AdjustmentStrategy(ABC):
     
     @staticmethod
     def apply_multiplicative_adjustment(adjustment: float, results: list) -> float:
-        adjustment_new = adjustment
+        adjustment_new = 1 / adjustment
         if adjustment is not None and len(results) > 0:
             for r in results:
-                if r.get('val_adjust_old') is not None:
+                if r.get('is_valid') is not None and r['is_valid'] and r.get('val_adjust_old') is not None:
                     r['val_adjust_old'] *= adjustment
-            max_r = max(
-                results,
-                key=lambda r: pd.to_datetime(r.get('rollover_date', datetime.min))
-            )
-            if max_r.get('val_adjust_new') is not None:
-                adjustment_new = max_r['val_adjust_new'] * adjustment
+            valid_results = [r for r in results if r.get('is_valid') is not None and r['is_valid']]
+            if valid_results:
+                max_r = max(
+                    valid_results,
+                    key=lambda r: pd.to_datetime(r.get('rollover_date', datetime.min))
+                )
+                if max_r.get('val_adjust_new') is not None:
+                    adjustment_new = max_r['val_adjust_new'] / adjustment
             return adjustment_new
         else:
             return adjustment_new
 
     @staticmethod
     def apply_additive_adjustment(adjustment: float, results: list) -> float:
-        adjustment_new = adjustment
+        adjustment_new = - adjustment
         if adjustment is not None and len(results) > 0:
             for r in results:
-                if r.get('val_adjust_old') is not None:
+                if r.get('is_valid') is not None and r['is_valid'] and r.get('val_adjust_old') is not None:
                     r['val_adjust_old'] += adjustment
-            max_r = max(
-                results,
-                key=lambda r: pd.to_datetime(r.get('rollover_date', datetime.min))
-            )
-            if max_r.get('val_adjust_new') is not None:
-                adjustment_new = max_r['val_adjust_new'] + adjustment
+            valid_results = (r for r in results if r.get('is_valid') is not None and r['is_valid'])
+            if valid_results:
+                max_r = max(
+                    valid_results,
+                    key=lambda r: pd.to_datetime(r.get('rollover_date', datetime.min))
+                )
+                if max_r.get('val_adjust_new') is not None:
+                    adjustment_new = max_r['val_adjust_new'] - adjustment
             return adjustment_new
         else:
             return adjustment_new
@@ -156,7 +162,7 @@ class PercentageAdjustmentStrategy(AdjustmentStrategy):
     
     def __init__(self, use_window: bool = False, window_size: int = 120,
                  old_price_field: str = 'close', new_price_field: str = 'close',
-                 new_price_old_data_bool: bool = True,
+                 new_price_old_data_bool: bool = True, description: Optional[str] = None,
                  adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
         super().__init__(adjustment_direction=adjustment_direction)
         self.use_window = use_window
@@ -164,6 +170,7 @@ class PercentageAdjustmentStrategy(AdjustmentStrategy):
         self.old_price_field = old_price_field
         self.new_price_field = new_price_field
         self.new_price_old_data_bool = new_price_old_data_bool
+        self.description = description
         self.name = "percentage_window" if use_window else "percentage"
 
     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
@@ -228,7 +235,7 @@ class SpreadAdjustmentStrategy(AdjustmentStrategy):
     
     def __init__(self, use_window: bool = True, window_size: int = 120,
                  old_price_field: str = 'close', new_price_field: str = 'close',
-                 new_price_old_data_bool: bool = True,
+                 new_price_old_data_bool: bool = True, description: Optional[str] = None,
                  adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
         super().__init__(adjustment_direction=adjustment_direction)
         self.adjustment_operation = AdjustmentOperation.ADDITIVE
@@ -237,6 +244,7 @@ class SpreadAdjustmentStrategy(AdjustmentStrategy):
         self.old_price_field = old_price_field
         self.new_price_field = new_price_field
         self.new_price_old_data_bool = new_price_old_data_bool
+        self.description = description
         self.name = "spread_window" if self.use_window else "spread"
     
     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
@@ -280,6 +288,7 @@ class WeightedAverageStrategy(AdjustmentStrategy):
     def __init__(self, weights_by_time: Optional[Dict[str, float]] = None,
                  old_price_field: str = 'close', new_price_field: str = 'close',
                  time_field: str = 'datetime', new_price_old_data_bool: bool = True,
+                 description: Optional[str] = None,
                  adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
         super().__init__(adjustment_direction=adjustment_direction)
         self.weights_by_time = weights_by_time or {}
@@ -287,6 +296,7 @@ class WeightedAverageStrategy(AdjustmentStrategy):
         self.new_price_field = new_price_field
         self.time_field = time_field
         self.new_price_old_data_bool = new_price_old_data_bool
+        self.description = description
         self.name = "weighted_average"
     
     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:

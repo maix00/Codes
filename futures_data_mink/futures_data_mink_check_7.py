@@ -29,48 +29,55 @@ from AdjustmentStrategy import PercentageAdjustmentStrategy
 import pandas as pd
 # from tqdm import tqdm
 import os
+import cProfile
+import pstats
+
+profiler = cProfile.Profile()
+profiler.enable()
 
 data_mink_path = '../data/data_mink_product_2025/'
 data_mink_path_main = '../data/data_mink_main_dayk/'
 os.makedirs(data_mink_path_main, exist_ok=True)
 
-product_contract_start_end_path = '../data/wind_mapping.parquet'
-PCSE = pd.read_parquet(product_contract_start_end_path)
-PCSE.columns.values[0] = "PRODUCT"
-PCSE.columns.values[1] = "CONTRACT"
-
-contract_dayk_path = '../data/data_dayk.parquet'
-
-# product_id_list = PCSE[~PCSE['PRODUCT'].str.contains('_S|-S')]['PRODUCT'].str.split('.').str[0].unique().tolist()
-# # product_id_list = ['OI']
-
 detector = DataMinkBasics.FuturesProcessor()
-detector.add_data_table('product_contract_start_end', PCSE[~PCSE['PRODUCT'].str.contains('_S')])
-detector.add_data_table('contract_dayk', pd.read_parquet(contract_dayk_path))
-strategy_selector = ProductPeriodStrategySelector(default_strategy={
-    "AdjustmentStrategy": PercentageAdjustmentStrategy(
-        old_price_field='close_price', new_price_field='close_price', 
-        new_price_old_data_bool=True, use_window=False
-    )
-})
-detector.generate_main_contract_series_adjusted(mink_folder_path=data_mink_path, strategy_selector=strategy_selector)
+detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
+detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping.parquet'))
+detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk.parquet'))
+detector.rollover_points_cache_path = '../data/rollover_points_cache.pkl'
+detector.rollover_adjustments_cache_path = '../data/rollover_adjustments.csv'
+detector.product_id_list = ['FU.SHF']
+# detector.calculate_adjustment()
 
-adjustment_df = detector.data_tables.get('adjustment_factors')
-if adjustment_df is not None and not adjustment_df.empty and len(adjustment_df) > 0:
-    adjustment_df.to_csv('../data/rollover_adjustments.csv', index=False)
-else:
-    print("No adjustment factors generated.")
+calculate_main_series = True
+if calculate_main_series:
+    main_series = detector.generate_main_contract_series(source_data_label='mink', 
+                                                         source_data_folder_UID_path=data_mink_path,
+                                                         add_adjust_col_bool=True)
+    main_series.to_csv('../data/main_mink.csv', index=False)
 
-issues_df = detector.data_tables.get('main_tick_issues')
-if issues_df is not None and not issues_df.empty and len(issues_df) > 0:
-    issues_df.to_csv('../data/main_mink_issues.csv', index=False)
-else:
-    print("No main tick issues detected.")
+calculate_main_series_adjusted = False
+if calculate_main_series_adjusted:
+    main_series = pd.read_csv('../data/main_mink.csv')
+    # main_series_adjusted = detector.generate_main_contract_series_adjusted(main_series)
+    # main_series_adjusted.to_csv('../data/main_mink_adjusted.csv', index=False)
 
-main_ticks_adjusted = detector.data_tables.get('main_tick_adjusted')
-if main_ticks_adjusted is not None and not main_ticks_adjusted.empty and len(main_ticks_adjusted) > 0:
-    main_ticks_adjusted.to_csv('../data/main_mink_adjusted.csv', index=False)
-else:
-    print("No main tick adjusted data available.")
+
+# issues_df = detector.data_tables.get('main_tick_issues')
+# if issues_df is not None and not issues_df.empty and len(issues_df) > 0:
+#     issues_df.to_csv('../data/main_mink_issues.csv', index=False)
+# else:
+#     print("No main tick issues detected.")
+
+# main_ticks_adjusted = detector.data_tables.get('main_tick_adjusted')
+# if main_ticks_adjusted is not None and not main_ticks_adjusted.empty and len(main_ticks_adjusted) > 0:
+#     main_ticks_adjusted.to_csv('../data/main_mink_adjusted.csv', index=False)
+# else:
+#     print("No main tick adjusted data available.")
+
+profiler.disable()
+# # 输出分析结果
+# stats = pstats.Stats(profiler)
+# stats.sort_stats('cumulative')  # 按累计时间排序
+# stats.print_stats(20)  # 显示前20个耗时最多的函数
 
 # End of file futures_data_mink/futures_data_mink_check_7.py

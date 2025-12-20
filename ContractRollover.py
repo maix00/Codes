@@ -62,8 +62,6 @@ class ContractRollover:
                 self.new_contract_start_datetime = self.rollover_datetime
             elif not self.new_contract_new_data.empty and self.datetime_col_name in self.new_contract_new_data.columns:
                 self.new_contract_start_datetime = pd.to_datetime(self.new_contract_new_data[self.datetime_col_name].iloc[0])
-            else:
-                self.new_contract_start_datetime = None
         
         if self.old_contract_end_datetime is None or self.old_contract_end_date is None:
             # 旧合约结束时间点通过old_contract_old_data的最后一条数据获取
@@ -93,8 +91,6 @@ class ContractRollover:
             elif not self.new_contract_new_data.empty and self.datetime_col_name in self.new_contract_new_data.columns:
                 # 如果没有旧合约结束日期，则直接使用新合约第一条数据的日期
                 self.new_contract_start_date = pd.to_datetime(self.new_contract_new_data[self.datetime_col_name]).iloc[0].date()
-            else:
-                self.new_contract_start_date = None
 
     def get_data_summary(self) -> Dict[str, Any]:
         """获取数据摘要"""
