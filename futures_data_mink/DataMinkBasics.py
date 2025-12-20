@@ -152,22 +152,25 @@ class FuturesProcessor(FuturesProcessorBase):
     
     def detect_rollover_points(self, rollover_points_cache_path: Optional[str] = None) -> Dict[str, List[ContractRollover]]:
         """
-        检测期货合约展期点（Rollover Points）。
-        本方法根据合约起止日期表（'product_contract_start_end'）自动检测每个期货品种的合约展期点，并为每个展期点加载切换前后两个合约的行情数据片段。方法包含对数据完整性和合理性的多重校验，确保展期点的准确性和数据的有效性。
+        检测期货合约的展期点（Rollover Points）。
+        
+        本方法根据合约起止日期表（'product_contract_start_end'），自动检测每个期货品种的合约展期点，并为每个展期点加载切换前后两个合约的行情数据片段。方法包含对数据完整性和合理性的多重校验，确保展期点的准确性和数据的有效性。
+        
         返回值:
-            Dict[str, List[ContractRollover]]: 返回一个字典，键为产品ID，值为该产品下检测到的合约展期点对象列表。每个ContractRollover对象包含切换前后合约的唯一标识、行情数据片段、切换日期等关键信息。
+            Dict[str, Dict[str, ContractRollover]]: 返回一个字典，键为产品ID，值为该产品下所有展期点（以切换日期为键）的ContractRollover对象。每个对象包含切换前后合约的唯一标识、行情数据片段、切换日期等关键信息。
+        
         异常:
             ValueError:
-                - 'product_contract_start_end'数据表为空或不存在时抛出。
-                - 'PRODUCT'列为空时抛出。
-                - 存在'STARTDATE'或'ENDDATE'有一个为空的行时抛出。
-                - 合约重复但ENDDATE顺序不正确时抛出。
-                - old_contract_tick非空但new_contract_tick为空时抛出。
-                - 日期格式不正确或无法提取decade_str时抛出。
+            - 'product_contract_start_end'数据表为空或不存在时抛出。
+            - 'PRODUCT'列为空时抛出。
+            - 存在'STARTDATE'或'ENDDATE'有一个为空的行时抛出。
+            - 合约重复但ENDDATE顺序不正确时抛出。
+            - 行情数据缺失或格式不正确时抛出。
+        
         注意事项:
             - 本方法依赖于self.data_tables['product_contract_start_end']的数据结构和内容。
             - 需要实现self.contract_data_loader方法用于加载合约行情数据。
-            - 合约展期点的判定基于合约起止日期的连续性、唯一性及行情数据的有效性。
+            - 展期点的判定基于合约起止日期的连续性、唯一性及行情数据的有效性。
             - 若数据表中存在异常或不一致的数据，将抛出相应异常以提示用户修正数据。
         """
 
@@ -251,6 +254,15 @@ class FuturesProcessor(FuturesProcessorBase):
             if drop_indices:
                 df = df.drop(df.index[drop_indices]).reset_index(drop=True)
             
+            # 如果已经有缓存的展期点，且数量接近，则进行对比，避免重复计算
+            if product_id in self.rollover_points and self.rollover_points[product_id]:
+                if abs(len(df) - len(self.rollover_points[product_id])) < 3:
+                    existing_dates = set(self.rollover_points[product_id].keys())
+                    current_dates = set(str(df.iloc[i + 1]['STARTDATE']) for i in range(len(df) - 1))
+                    # print(product_id, existing_dates == current_dates)
+                    if existing_dates == current_dates:
+                        continue
+
             # 遍历所有行，检测展期点
             # 缓存合约行情数据，避免重复加载
             contract_data_cache = {}
@@ -264,8 +276,10 @@ class FuturesProcessor(FuturesProcessorBase):
                 this_row = df.iloc[idx]
                 next_row = df.iloc[idx + 1]
                 
+                this_start_date = pd.to_datetime(this_row['STARTDATE'])
                 this_end_date = pd.to_datetime(this_row['ENDDATE'])
                 next_start_date = pd.to_datetime(next_row['STARTDATE'])
+                next_end_date = pd.to_datetime(next_row['ENDDATE'])
 
                 if product_id in self.rollover_points and next_start_date.date() in self.rollover_points[product_id]:
                     continue
@@ -307,16 +321,9 @@ class FuturesProcessor(FuturesProcessorBase):
                 if mask_new.any():
                     new_contract_old_data = contract_data_cache[new_contract_UID][mask_new].iloc[[-1]]
                 else:
-                    # if not new_contract_empty:
-                    #     raise ValueError(f"{product_id} {next_start_date.date()}: new_contract非空但找不到数据日期小于等于旧合约ENDDATE的数据")
                     new_contract_old_data = pd.DataFrame()
                     is_valid = False
 
-                # print_str = '2018-05-10'
-                # print_str = '2018-06-26'
-                # if product_id == 'FU.SHF' and str(next_start_date.date()) == print_str:
-                #     print(print_str, new_contract_empty, new_contract_old_data, new_contract_UID, min(new_trading_days), max(new_trading_days))
-                
                 rollover = ContractRollover(
                     old_contract=old_contract_UID,
                     new_contract=new_contract_UID,
@@ -324,10 +331,14 @@ class FuturesProcessor(FuturesProcessorBase):
                     old_contract_new_data=pd.DataFrame(),
                     new_contract_old_data=new_contract_old_data,
                     new_contract_new_data=pd.DataFrame(),
+                    old_contract_start_date=this_start_date.date(),
+                    old_contract_start_datetime=None,
                     old_contract_end_date=this_end_date.date(),
                     old_contract_end_datetime=None,
                     new_contract_start_date=next_start_date.date(),
                     new_contract_start_datetime=None,
+                    new_contract_end_date=next_end_date.date(),
+                    new_contract_end_datetime=None,
                     is_valid=is_valid
                 )
                 if rollover.is_valid:
@@ -348,16 +359,24 @@ class FuturesProcessor(FuturesProcessorBase):
     @staticmethod
     def calculate_decade_str(row):
         """
-        根据给定行数据中的 'ENDDATE' 和 'CONTRACT' 字段，提取和计算十年期字符串（decade_str）。
+        计算合约十年期字符串（decade_str）。
+        
+        本方法根据传入数据行中的 'ENDDATE' 和 'CONTRACT' 字段，自动提取并计算期货合约的十年期字符串（decade_str），用于唯一标识合约所属的年代。
+        
         参数:
             row (pd.Series): 包含至少 'ENDDATE'、'PRODUCT' 和 'CONTRACT' 字段的数据行。
-        返回:
+        
+        返回值:
             str: 计算得到的十年期字符串。
+        
         异常:
-            ValueError: 如果 'ENDDATE' 字符串长度小于4，或 'CONTRACT' 中的数字长度不在3到4之间，则抛出异常，并提示对应的 'PRODUCT'。
-        说明:
-            - 首先检查 'ENDDATE' 和 'CONTRACT' 字段格式是否正确。
-            - 根据 'CONTRACT' 字段倒数第三位是否为 '0' 以及 'ENDDATE' 第四位是否为 '0'，决定返回 'ENDDATE' 的第三位或其加1后的字符串。
+            ValueError:
+            - 当 'ENDDATE' 字符串长度小于4时抛出。
+            - 当 'CONTRACT' 中的数字长度不在3到4之间时抛出。
+        
+        注意事项:
+            - 本方法假设 'ENDDATE' 字段为8位日期字符串（如20231231），'CONTRACT' 字段包含合约代码及年月。
+            - decade_str 的判断逻辑：若 'CONTRACT' 数字部分倒数第三位为 '0' 且 'ENDDATE' 第四位不为 '0'，则返回 'ENDDATE' 的第三位加1，否则返回 'ENDDATE' 的第三位。
         """
         enddate_str = str(row['ENDDATE'])
         product_id = row['PRODUCT']
@@ -374,18 +393,28 @@ class FuturesProcessor(FuturesProcessorBase):
     
     def contract_data_loader(self, unique_instrument_id: str, table_name: str, mink_folder_path: Optional[str] = None) -> pd.DataFrame:
         """
-        根据合约的unique_instrument_id加载对应的行情数据。
+        加载指定合约的行情数据。
+
+        本方法根据合约的唯一标识符（unique_instrument_id）和数据表名称（table_name），返回对应的行情数据DataFrame。支持日线（contract_dayk）和分钟线（contract_mink）两类行情数据。
 
         参数:
-            unique_instrument_id: 合约的唯一标识符
-            table_name: 数据表名称，如'old_contract_tick'或'new_contract_tick'
+            unique_instrument_id (str): 合约唯一标识符。
+            table_name (str): 数据表名称，支持'contract_dayk'或'contract_mink'。
+            mink_folder_path (Optional[str]): 分钟线数据文件夹路径，仅在table_name为'contract_mink'时需要指定。
 
-        返回:
-            返回该合约对应的DataFrame数据
+        返回值:
+            pd.DataFrame: 返回对应合约的行情数据，若数据不存在则返回包含所需字段的空DataFrame。
 
-        说明:
-            本方法会从self.data_tables[table_name]中筛选出unique_instrument_id等于指定值的所有数据行。
-            若数据表不存在或为空，则抛出异常。
+        异常:
+            ValueError:
+            - 数据表为空或不存在时抛出。
+            - mink_folder_path未指定或文件不存在时抛出。
+            - table_name不支持时抛出。
+
+        注意事项:
+            - 日线数据直接从self.data_tables['contract_dayk']按unique_instrument_id筛选。
+            - 分钟线数据从指定文件夹按unique_instrument_id加载csv文件。
+            - 若数据不存在，返回结构一致的空DataFrame，便于后续处理。
         """
         if table_name == 'contract_dayk':
             df = self.data_tables.get(table_name)
@@ -418,25 +447,31 @@ class FuturesProcessor(FuturesProcessorBase):
                              strategy_selector: Optional[ProductPeriodStrategySelector] = None,
                              rollover_adjustments_cache_path: Optional[str] = None) -> pd.DataFrame:
         """
-        计算期货合约的调整因子（Adjustment Factors）。
-        本方法针对每个产品ID，依据指定的调整策略（AdjustmentStrategy），结合合约展期点（rollover_points），计算合约切换时的价格调整因子。支持加法和乘法两种调整操作，并对每个展期点进行有效性校验。结果以DataFrame形式返回，并存储于self.data_tables['rollover_adjustments']。
+        计算期货合约展期时的价格调整因子（Adjustment Factors）。
+
+        本方法针对每个产品ID，结合指定的调整策略（AdjustmentStrategy）和合约展期点（rollover_points），计算合约切换时的价格调整因子。支持加法和乘法两种调整方式，并对每个展期点的有效性进行校验。所有结果以DataFrame形式返回，并存储于self.data_tables['rollover_adjustments']。
+
         参数:
-            product_id (Optional[str]): 指定产品ID，若为None则对所有产品进行计算。
+            product_id_list (Optional[List[str]]): 指定需要计算的产品ID列表，若为None则对所有产品进行计算。
             strategy_selector (Optional[ProductPeriodStrategySelector]): 产品-周期调整策略选择器，若未指定则使用默认策略。
+            rollover_adjustments_cache_path (Optional[str]): 调整因子结果缓存文件路径，若指定则支持结果缓存。
+
         返回值:
-            pd.DataFrame: 包含所有产品合约展期点的调整因子结果表。每行包括产品ID、切换前后合约ID、展期日期、调整策略、调整操作类型、有效性状态、原始及累计调整因子等信息。
+            pd.DataFrame: 包含所有产品合约展期点的调整因子结果表。每行包括产品ID、切换前后合约ID、展期日期、调整策略、调整操作类型、有效性状态、调整因子等信息。
+
         异常:
             ValueError:
-                - 'product_contract_start_end'数据表为空或不存在时抛出。
-                - 'PRODUCT'列为空时抛出。
-                - ProductPeriodStrategySelector.default_strategy中缺少'AdjustmentStrategy'键时抛出。
-                - 未检测到指定产品的rollover_points时抛出。
-                - 调整操作类型未知时抛出。
+            - 'product_contract_start_end'数据表为空或不存在时抛出。
+            - 'PRODUCT'列为空时抛出。
+            - ProductPeriodStrategySelector.default_strategy中缺少'AdjustmentStrategy'键时抛出。
+            - 未检测到指定产品的rollover_points时抛出。
+            - 调整操作类型未知时抛出。
+
         注意事项:
-            - 本方法依赖于self.data_tables['product_contract_start_end']和self.rollover_points的数据结构和内容。
+            - 本方法依赖于self.data_tables['product_contract_start_end']和self.rollover_points的数据结构。
             - 若未检测到rollover_points，将自动调用self.detect_rollover_points()进行检测。
             - 支持自定义调整策略，需实现相关接口（如is_valid、calculate_adjustment、apply_adjustment_to_results等）。
-            - 结果表会自动合并至已有的rollover_adjustments表中，避免重复计算。
+            - 结果表会自动合并至已有的rollover_adjustments表，避免重复计算。
         """
 
         # 判断self是否存在strategy_selector属性
@@ -502,11 +537,10 @@ class FuturesProcessor(FuturesProcessorBase):
             rollover_keys = sorted(self.rollover_points[product_id].keys())
 
             if hasattr(self, '_rollover_adjustments_grouped') and product_id in self._rollover_adjustments_grouped.groups:
-                self._rollover_adjustments_grouped_2 = self._rollover_adjustments_grouped.get_group(product_id).groupby('rollover_date')
+                self._rollover_adjustments_grouped_2 = self._rollover_adjustments_grouped.get_group(product_id).groupby('new_contract_start_date')
 
             results = []
             is_valid = False
-            val_adjust_new_start_date = None
             renew_flag = False
             # 按照rollover_points的key（日期）从小到大排序遍历
             for idx, rollover_date in enumerate(rollover_keys):
@@ -546,22 +580,15 @@ class FuturesProcessor(FuturesProcessorBase):
                             raise ValueError(f"{product_id} {rollover_date}: 存在多个不同val_adjust的重复行，无法决定保留哪一个")
                         if renew_flag:
                             adjustment = filtered_group.iloc[0]['val_adjust']
-                            adjustment_new = strategy.apply_adjustment_to_results(adjustment, results)
-                            # 修改val_adjust_old和val_adjust_new为当前adjustment和adjustment_new
+                            strategy.apply_adjustment_to_results(adjustment, results)
                             row = filtered_group.iloc[0]
-                            row['val_adjust_old'] = adjustment
-                            row['val_adjust_new'] = adjustment_new
-                            results.append(row.to_dict())
+                            row_dict = row.to_dict()
+                            row_dict['val_adjust_old'] = adjustment
+                            results.append(row_dict)
                             continue
                         else:
                             results.append(filtered_group.iloc[0].to_dict())
                             continue
-
-                # 计算val_adjust_new_start_date
-                if idx > 0:
-                    if is_valid and not prev_is_valid:
-                        prev_rollover_date = rollover_keys[idx - 1]
-                        val_adjust_new_start_date = self.rollover_points[product_id][prev_rollover_date].new_contract_start_date
 
                 if is_valid:
                     adjustment_mul, adjustment_add = strategy.calculate_adjustment(rollover)
@@ -571,39 +598,30 @@ class FuturesProcessor(FuturesProcessorBase):
                         adjustment = adjustment_mul
                     else:
                         raise ValueError(f"未知的调整操作类型: {strategy.adjustment_operation}")
-                    adjustment_new = strategy.apply_adjustment_to_results(adjustment, results)
+                    strategy.apply_adjustment_to_results(adjustment, results)
                 else:
                     adjustment = None
-                    adjustment_new = None
 
                 results.append({
                     'product_id': product_id,
                     'old_unique_instrument_id': rollover.old_contract,
                     'new_unique_instrument_id': rollover.new_contract,
-                    'rollover_date': str(rollover.new_contract_start_date),
+                    'old_contract_start_date': str(rollover.old_contract_start_date),
+                    'old_contract_end_date': str(rollover.old_contract_end_date),
+                    'new_contract_start_date': str(rollover.new_contract_start_date),
+                    'new_contract_end_date': str(rollover.new_contract_end_date),
                     'is_valid': is_valid,
                     'validity_status': validity_status,
                     'val_adjust': adjustment,
                     'val_adjust_old': adjustment,
-                    'val_adjust_new': adjustment_new,
-                    'val_adjust_new_start_date': val_adjust_new_start_date,
                     'adjustment_strategy': strategy.__class__.__name__,
                     'adjustment_operation': strategy.adjustment_operation.name,
                     'description': strategy.description,
                 })
 
-            result_df = pd.DataFrame(results).dropna(axis=1, how='all')
-            if 'rollover_date' in result_df.columns:
-                if 'rollover_date_prev' in result_df.columns:
-                    result_df = result_df.drop(columns=['rollover_date_prev'])
-                if 'rollover_date_next' in result_df.columns:
-                    result_df = result_df.drop(columns=['rollover_date_next'])
-                result_df.insert(3, 'rollover_date_prev', result_df['rollover_date'].shift(1))
-                result_df.insert(5, 'rollover_date_next', result_df['rollover_date'].shift(-1))
-            
-            self._rollover_adjustments_grouped_new[product_id] = result_df
+            self._rollover_adjustments_grouped_new[product_id] = pd.DataFrame(results).dropna(axis=1, how='all')
 
-        # 合并所有result_df
+        # 合并所有product_id的结果到self.data_tables['rollover_adjustments']
         if hasattr(self, '_rollover_adjustments_grouped_new'):
             all_result_df = pd.concat(self._rollover_adjustments_grouped_new.values(), ignore_index=True)
             self.data_tables['rollover_adjustments'] = all_result_df
@@ -627,7 +645,34 @@ class FuturesProcessor(FuturesProcessorBase):
     def generate_main_contract_series(self, source_data_label: str = 'dayk', 
                              source_data_folder_UID_path: Optional[str] = None,
                              add_adjust_col_bool: bool = False) -> pd.DataFrame:
+        '''
+        生成主力合约序列（Main Contract Series）。
+       
+        本方法针对每个产品ID，依据合约展期点（rollover_points）和指定的数据源，拼接生成主力合约的连续行情序列。可选地支持添加价格调整因子（如前复权/后复权），并对数据质量进行检测和修正。最终结果以DataFrame形式返回，包含所有产品的主力合约行情数据。
         
+        参数:
+            source_data_label (str): 指定行情数据类型标签（如'dayk'），用于加载合约行情数据。
+            source_data_folder_UID_path (Optional[str]): 指定行情数据文件夹路径，若为None则使用默认路径。
+            add_adjust_col_bool (bool): 是否添加价格调整因子列（adjustment_mul, adjustment_add），用于主力合约切换时的价格连续性调整。
+        
+        返回值:
+            pd.DataFrame: 返回所有产品主力合约的拼接行情数据表。每行包括产品ID、主力合约ID、交易日、行情数据、（可选）调整因子等信息。
+        
+        异常:
+            ValueError:
+                - 'product_contract_start_end'数据表为空或不存在时抛出。
+                - 'PRODUCT'列为空时抛出。
+                - 未检测到指定产品的rollover_points时抛出。
+                - 调整因子记录缺失或存在多条匹配时抛出。
+                - 数据表结构异常或产品信息不唯一时抛出。
+        
+        注意事项:
+            - 本方法依赖于self.data_tables['product_contract_start_end']和self.rollover_points的数据结构和内容。
+            - 若未检测到rollover_points，将自动调用self.detect_rollover_points()进行检测。
+            - 若需添加调整因子，需先计算并加载self.data_tables['rollover_adjustments']，并指定调整策略。
+            - 内部自动进行数据质量检测（如成交量为零的连续区段），并可根据预设方案进行修正。
+            - 结果表按产品ID拼接，适用于主力合约连续行情的后续分析与建模。
+        '''
         # 检查是否已经有product_id_list属性
         if not hasattr(self, 'product_id_list'):
             # 获取所有产品的合约起止日期表
@@ -718,7 +763,7 @@ class FuturesProcessor(FuturesProcessorBase):
             # Data Quality Checker (Volume)
             checker_2 = DataQualityChecker(filtered,
                                             columns=['volume'],
-                                            column_mapping={'symbol': 'unique_instrument_id', 'time': 'trade_time'})
+                                            column_mapping={'symbol': 'main_uid', 'time': 'trade_time'})
             checker_2.solution_mapping[DataIssueLabel.ZERO_SEQUENCE_LONG] = DataIssueSolution.NO_ACTION
             checker_2.solution_mapping[DataIssueLabel.ZERO_SEQUENCE_SHORT] = DataIssueSolution.NO_ACTION
             checker_2.solution_mapping[DataIssueLabel.ZERO_SEQUENCE_ALL] = DataIssueSolution.NO_ACTION
@@ -741,7 +786,7 @@ class FuturesProcessor(FuturesProcessorBase):
             # Data Quality Checker (Price)
             checker = DataQualityChecker(checked, 
                                             columns=['open_price', 'highest_price', 'lowest_price', 'close_price'],
-                                            column_mapping={'symbol': 'unique_instrument_id', 'time': 'trade_time'})
+                                            column_mapping={'symbol': 'main_uid', 'time': 'trade_time'})
             issues_df = checker.issues_df
             if issues_df is not None and not issues_df.empty:
                 self.all_issues.append(issues_df)
@@ -752,9 +797,8 @@ class FuturesProcessor(FuturesProcessorBase):
         for product_id in tqdm(self.product_id_list, desc="Generating main series"):
 
             if add_adjust_col_bool and hasattr(self, '_rollover_adjustments_grouped') and product_id in self._rollover_adjustments_grouped.groups:
-                self._rollover_adjustments_grouped_date_curr = self._rollover_adjustments_grouped.get_group(product_id).groupby('rollover_date')
-                self._rollover_adjustments_grouped_date_prev = self._rollover_adjustments_grouped.get_group(product_id).groupby('rollover_date_prev')
-            
+                self._rollover_adjustments_grouped_date_curr = self._rollover_adjustments_grouped.get_group(product_id).groupby('new_contract_start_date')
+                self._rollover_adjustments_grouped_date_prev = self._rollover_adjustments_grouped.get_group(product_id).groupby('old_contract_start_date')
             
             if product_id in self.rollover_points:
                 rollover_keys = sorted(self.rollover_points[product_id].keys())
@@ -788,7 +832,8 @@ class FuturesProcessor(FuturesProcessorBase):
                                         break
                             filtered = add_adjustment_columns(filtered, strategy, product_id, 
                                                               str(rollover.new_contract_start_date), first_line=True)
-                        filtered.insert(0, 'main_product_id', product_id)
+                        filtered = filtered.rename(columns={'unique_instrument_id': 'main_uid'})
+                        filtered.insert(0, 'unique_instrument_id', product_id)
                         filtered = add_data_quality_columns(filtered)
                         main_series.append(filtered.dropna(axis=1, how='all'))
                     # new_contract部分
@@ -812,7 +857,8 @@ class FuturesProcessor(FuturesProcessorBase):
                                     break
                         filtered = add_adjustment_columns(filtered, strategy, product_id, 
                                                             str(rollover.new_contract_start_date), last_line=last_line)
-                    filtered.insert(0, 'main_product_id', product_id)
+                    filtered = filtered.rename(columns={'unique_instrument_id': 'main_uid'})
+                    filtered.insert(0, 'unique_instrument_id', product_id)
                     filtered = add_data_quality_columns(filtered)
                     main_series.append(filtered.dropna(axis=1, how='all'))
             else:
@@ -831,7 +877,8 @@ class FuturesProcessor(FuturesProcessorBase):
                 if add_adjust_col_bool:
                     contract_data.insert(6, 'adjustment_mul', 1.0)
                     contract_data.insert(7, 'adjustment_add', 0.0)
-                contract_data.insert(0, 'main_product_id', product_id)
+                contract_data = contract_data.rename(columns={'unique_instrument_id': 'main_uid'})
+                contract_data.insert(0, 'unique_instrument_id', product_id)
                 contract_data = add_data_quality_columns(contract_data)
                 main_series.append(contract_data.dropna(axis=1, how='all'))
         

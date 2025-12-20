@@ -109,51 +109,27 @@ class AdjustmentStrategy(ABC):
         return copy.deepcopy(self)
     
     @staticmethod
-    def apply_multiplicative_adjustment(adjustment: float, results: list) -> float:
-        adjustment_new = 1 / adjustment
+    def apply_multiplicative_adjustment(adjustment: float, results: list):
         if adjustment is not None and len(results) > 0:
             for r in results:
                 if r.get('is_valid') is not None and r['is_valid'] and r.get('val_adjust_old') is not None:
                     r['val_adjust_old'] *= adjustment
-            valid_results = [r for r in results if r.get('is_valid') is not None and r['is_valid']]
-            if valid_results:
-                max_r = max(
-                    valid_results,
-                    key=lambda r: pd.to_datetime(r.get('rollover_date', datetime.min))
-                )
-                if max_r.get('val_adjust_new') is not None:
-                    adjustment_new = max_r['val_adjust_new'] / adjustment
-            return adjustment_new
-        else:
-            return adjustment_new
 
     @staticmethod
-    def apply_additive_adjustment(adjustment: float, results: list) -> float:
-        adjustment_new = - adjustment
+    def apply_additive_adjustment(adjustment: float, results: list):
         if adjustment is not None and len(results) > 0:
             for r in results:
                 if r.get('is_valid') is not None and r['is_valid'] and r.get('val_adjust_old') is not None:
                     r['val_adjust_old'] += adjustment
-            valid_results = (r for r in results if r.get('is_valid') is not None and r['is_valid'])
-            if valid_results:
-                max_r = max(
-                    valid_results,
-                    key=lambda r: pd.to_datetime(r.get('rollover_date', datetime.min))
-                )
-                if max_r.get('val_adjust_new') is not None:
-                    adjustment_new = max_r['val_adjust_new'] - adjustment
-            return adjustment_new
-        else:
-            return adjustment_new
 
-    def apply_adjustment_to_results(self, adjustment: float, results: list) -> float:
+    def apply_adjustment_to_results(self, adjustment: float, results: list):
         """
         基类方法：对子类开放，允许定向至不同的静态方法
         """
         if self.adjustment_operation == AdjustmentOperation.ADDITIVE:
-            return self.apply_additive_adjustment(adjustment, results)
+            self.apply_additive_adjustment(adjustment, results)
         elif self.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
-            return self.apply_multiplicative_adjustment(adjustment, results)
+            self.apply_multiplicative_adjustment(adjustment, results)
         else:
             raise ValueError(f"未知的调整操作类型: {self.adjustment_operation}")
 

@@ -9,5 +9,10 @@ df = pd.read_parquet(file_path)
 pd.set_option('display.max_columns', None)
 print(df.head())
 
-csv_path = file_path.replace('.parquet', '.csv')
-df.to_csv(csv_path, index=False)
+ls = df['product_id'].unique()
+ls = df['unique_instrument_id'].unique()
+ls = [uid for uid in ls if 'FU' in uid]
+print(ls)
+
+# csv_path = file_path.replace('.parquet', '.csv')
+# df.to_csv(csv_path, index=False)

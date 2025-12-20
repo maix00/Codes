@@ -45,6 +45,10 @@ class ContractRollover:
     # 关键时间点
     new_contract_start_datetime: Optional[datetime] = None  # 新合约开始时间点
     new_contract_start_date: Optional[date] = None          # 新合约开始日期
+    new_contract_end_datetime: Optional[datetime] = None    # 新合约结束时间点
+    new_contract_end_date: Optional[date] = None            # 新合约结束日期
+    old_contract_start_datetime: Optional[datetime] = None  # 旧合约开始时间点
+    old_contract_start_date: Optional[date] = None          # 旧合约开始日期
     old_contract_end_datetime: Optional[datetime] = None    # 旧合约结束时间点
     old_contract_end_date: Optional[date] = None            # 旧合约结束日期
     
@@ -72,9 +76,6 @@ class ContractRollover:
                     self.old_contract_end_date = self.old_contract_end_datetime.date()
                 else:
                     self.old_contract_end_date = None
-            else:
-                self.old_contract_end_datetime = None
-                self.old_contract_end_date = None
         
         if self.new_contract_start_date is None:
             # 新合约开始日期需要通过遍历new_contract_new_data的datetime找到第一个与old_contract_end_date不一致的date

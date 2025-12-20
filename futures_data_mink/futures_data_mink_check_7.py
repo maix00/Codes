@@ -45,10 +45,11 @@ detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/w
 detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk.parquet'))
 detector.rollover_points_cache_path = '../data/rollover_points_cache.pkl'
 detector.rollover_adjustments_cache_path = '../data/rollover_adjustments.csv'
-detector.product_id_list = ['FU.SHF']
-# detector.calculate_adjustment()
+# detector.product_id_list = ['FU.SHF']
+# detector.detect_rollover_points()
+detector.calculate_adjustment()
 
-calculate_main_series = True
+calculate_main_series = False
 if calculate_main_series:
     main_series = detector.generate_main_contract_series(source_data_label='mink', 
                                                          source_data_folder_UID_path=data_mink_path,
