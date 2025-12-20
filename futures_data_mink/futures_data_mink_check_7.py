@@ -47,33 +47,27 @@ detector.rollover_points_cache_path = '../data/rollover_points_cache.pkl'
 detector.rollover_adjustments_cache_path = '../data/rollover_adjustments.csv'
 # detector.product_id_list = ['FU.SHF']
 # detector.detect_rollover_points()
-detector.calculate_adjustment()
+# detector.calculate_adjustment()
 
-calculate_main_series = False
-if calculate_main_series:
+calculate_main_series_dayk = False
+calculate_main_series_mink = False
+issues_path = '../data/main_mink_issues.csv'
+if calculate_main_series_dayk:
+    main_series = detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True)
+    main_series.to_csv('../data/main_dayk.csv', index=False)
+    issues_path = '../data/main_dayk_issues.csv'
+if calculate_main_series_mink:
     main_series = detector.generate_main_contract_series(source_data_label='mink', 
                                                          source_data_folder_UID_path=data_mink_path,
                                                          add_adjust_col_bool=True)
     main_series.to_csv('../data/main_mink.csv', index=False)
 
-calculate_main_series_adjusted = False
-if calculate_main_series_adjusted:
-    main_series = pd.read_csv('../data/main_mink.csv')
-    # main_series_adjusted = detector.generate_main_contract_series_adjusted(main_series)
-    # main_series_adjusted.to_csv('../data/main_mink_adjusted.csv', index=False)
-
-
-# issues_df = detector.data_tables.get('main_tick_issues')
-# if issues_df is not None and not issues_df.empty and len(issues_df) > 0:
-#     issues_df.to_csv('../data/main_mink_issues.csv', index=False)
-# else:
-#     print("No main tick issues detected.")
-
-# main_ticks_adjusted = detector.data_tables.get('main_tick_adjusted')
-# if main_ticks_adjusted is not None and not main_ticks_adjusted.empty and len(main_ticks_adjusted) > 0:
-#     main_ticks_adjusted.to_csv('../data/main_mink_adjusted.csv', index=False)
-# else:
-#     print("No main tick adjusted data available.")
+if hasattr(detector, 'all_issues'):
+    issues_df = pd.concat(detector.all_issues, ignore_index=True) if len(detector.all_issues) > 0 else None
+    if issues_df is not None and not issues_df.empty and len(issues_df) > 0:
+        issues_df.to_csv(issues_path, index=False)
+    else:
+        print("No main tick issues detected.")
 
 profiler.disable()
 # # 输出分析结果

@@ -1,22 +1,26 @@
 """
 DataMinkBasics.py
-本模块提供了期货合约唯一标识符（unique_instrument_id）与产品代码（product_id）、Wind代码（windcode）之间的转换工具函数。
+
+本模块为期货数据处理基础工具，提供期货合约唯一标识符（unique_instrument_id）、产品代码（product_id）与 Wind 代码（windcode）之间的相互转换函数。
+
 主要内容包括：
 - 交易所代码映射表（exchange_map）
-- 获取当前年份十位数字的工具
-- unique_instrument_id 与 product_id、windcode 之间的相互转换函数
+- 当前年份十位数字的获取方法
+- unique_instrument_id 与 product_id、windcode 之间的转换函数
+
 函数说明：
 - unique_instrument_id_to_product_id(unique_instrument_id: str) -> str
-    将 unique_instrument_id 转换为产品代码（product_id）。如果 unique_instrument_id 以 'F' 结尾，则在 product_id 后加 '_F'。
+    将 unique_instrument_id 转换为产品代码（product_id），若以 'F' 结尾则加 '_F' 后缀。
 - unique_instrument_id_to_windcode(unique_instrument_id: str) -> str
     将 unique_instrument_id 转换为 Wind 代码（windcode），格式为“产品代码+月份.交易所代码”。
 - unique_instrument_id_to_windcode_simp(unique_instrument_id: str) -> str
-    将 unique_instrument_id 转换为简化版 Wind 代码（windcode），月份部分去掉首位字符。
-- windcode_to_unique_instrument_id(windcode: str) -> str
-    将 Wind 代码（windcode）转换为 unique_instrument_id，自动处理年份十位数字的补全。
+    将 unique_instrument_id 转换为简化版 Wind 代码，月份部分去掉首位字符。
+- windcode_to_unique_instrument_id(windcode: str, decade_str: str = year_tens) -> str
+    将 Wind 代码转换为 unique_instrument_id，自动补全年份十位数字。
+
 注意事项：
-- 所有函数均假设 unique_instrument_id 的格式为“交易所|F|产品代码|月份”。
-- 若输入格式不正确，函数会抛出 ValueError 异常。
+- 所有函数假定 unique_instrument_id 格式为“交易所|F|产品代码|月份”。
+- 输入格式不正确时，函数会抛出 ValueError 异常。
 """
 
 from datetime import datetime, date
@@ -27,7 +31,8 @@ from ContractRollover import ContractRollover
 from FuturesProcessor import FuturesProcessorBase 
 from StrategySelector import ProductPeriodStrategySelector
 from DataQualityChecker import DataQualityChecker, DataIssueLabel, DataIssueSolution
-from AdjustmentStrategy import ValidityStatus, AdjustmentStrategy, PercentageAdjustmentStrategy, AdjustmentDirection, AdjustmentOperation
+from AdjustmentStrategy import ValidityStatus, AdjustmentStrategy, PercentageAdjustmentStrategy, \
+    AdjustmentDirection, AdjustmentOperation
 import pandas as pd
 from tqdm import tqdm
 import pickle
