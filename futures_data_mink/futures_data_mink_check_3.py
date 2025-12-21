@@ -63,7 +63,7 @@ for unique_id in tqdm(unique_instrument_ids):
     # 去除重复的timestamp并排序
     filtered_data = filtered_data.drop_duplicates(subset='trade_timestamp').sort_values(by='trade_timestamp')
 
-    # 保存到CSV文件
+    # 保存到Parquet文件
     output_file_path = os.path.join(output_folder, f'{unique_id}.parquet')
     filtered_data.to_parquet(output_file_path, index=False)
 
