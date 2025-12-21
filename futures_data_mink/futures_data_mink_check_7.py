@@ -43,22 +43,20 @@ detector.rollover_adjustments_cache_path = '../data/rollover_adjustments.csv'
 # detector.product_id_list = ['FU.SHF']
 # detector.detect_rollover_points()
 # detector.calculate_adjustment()
-detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
-                                       save_path='../data/main_dayk.parquet',
-                                       issues_save_path='../data/main_dayk_issues.csv')
+# detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
+#                                        save_path='../data/main_dayk.parquet',
+#                                        issues_save_path='../data/main_dayk_issues.csv')
 # detector.generate_main_contract_series(source_data_label='mink', 
 #                                        source_data_folder_UID_path='../data/data_mink_product_2025/',
 #                                        add_adjust_col_bool=True,
 #                                        save_path='../data/main_mink.parquet',
 #                                        issues_save_path='../data/main_mink_issues.csv')
-price_cols = ['open_price', 'highest_price', 'lowest_price', 'close_price', 'twap', 'vwap',
-              'settlement_price', 'upper_limit_price', 'lower_limit_price', 'pre_settlement_price']
-# detector.generate_main_contract_series_adjusted(data=pd.read_parquet('../data/main_dayk.parquet'),
-#                                                 save_path='../data/main_dayk_adjusted.parquet', price_cols=price_cols,
-#                                                 report_bool=True, report_save_path='../data/main_dayk_adjusted_report.csv',
-#                                                 plot_bool=True, plot_save_path='../data/main_dayk_adjusted_plots/')
+detector.generate_main_contract_series_adjusted(data=pd.read_parquet('../data/main_dayk.parquet'),
+                                                save_path='../data/main_dayk_adjusted.parquet',
+                                                report_bool=True, report_save_path='../data/main_dayk_adjusted_report.csv',
+                                                plot_bool=True, plot_save_path='../data/main_dayk_adjusted_plots/')
 # detector.generate_main_contract_series_adjusted(data=pd.read_parquet('../data/main_mink.parquet'),
-#                                                 save_path='../data/main_mink_adjusted.parquet', price_cols=price_cols,
+#                                                 save_path='../data/main_mink_adjusted.parquet',
 #                                                 report_bool=True, report_save_path='../data/main_mink_adjusted_report.csv',
 #                                                 plot_bool=True, plot_save_path='../data/main_mink_adjusted_plots/',
 #                                                 plot_start_date='2025-01-01', plot_end_date='2026-01-01',)

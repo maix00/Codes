@@ -900,4 +900,20 @@ class FuturesProcessor(FuturesProcessorBase):
         else:
             return pd.DataFrame()
         
+    def generate_main_contract_series_adjusted(self, 
+                                               data: Optional[pd.DataFrame] = None, save_path: Optional[str] = None,
+                                               uid_col: str = 'unique_instrument_id', time_col: str = 'trade_time', rollover_idx_col: str = 'trading_day',
+                                               price_cols: List[str] = ['open_price', 'highest_price', 'lowest_price', 'close_price', 'twap', 'vwap', 
+                                                                        'settlement_price', 'upper_limit_price', 'lower_limit_price', 'pre_settlement_price'],
+                                               report_bool: bool = True, report_save_path: Optional[str] = None,
+                                               plot_bool: bool = False, plot_col_name: str = 'close_price', plot_save_path: Optional[str] = None,
+                                               plot_start_date: Optional[datetime|str] = None, plot_end_date: Optional[datetime|str] = None,
+                                               plot_sample_step: Optional[int] = None, plot_max_points: int = 5000) -> pd.DataFrame:
+        return super().generate_main_contract_series_adjusted(data=data, save_path=save_path, 
+                                                              uid_col=uid_col, time_col=time_col, rollover_idx_col=rollover_idx_col, price_cols=price_cols, 
+                                                              report_bool=report_bool, report_save_path=report_save_path, 
+                                                              plot_bool=plot_bool, plot_col_name=plot_col_name, plot_save_path=plot_save_path, 
+                                                              plot_start_date=plot_start_date, plot_end_date=plot_end_date, 
+                                                              plot_sample_step=plot_sample_step, plot_max_points=plot_max_points)
+        
 # End of DataMinkBasics.py
