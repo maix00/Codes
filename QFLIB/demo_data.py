@@ -98,27 +98,27 @@ session_builder.set_portfolio_currency("CNY")  # Set the portfolio currency expl
 #     "../data/data_mink_main_ticks_adjusted.csv"
 # )
 
-data_folder = Path("../data/data_mink_product_2025_main")
-file_names: Sequence[str] = [f.stem for f in data_folder.iterdir() if f.is_file() and f.suffix == ".csv"]
-file_names = "BC"
+# data_folder = Path("../data/data_mink_product_2025_main")
+# file_names: Sequence[str] = [f.stem for f in data_folder.iterdir() if f.is_file() and f.suffix == ".csv"]
+file_names = "BC.INE"
 
 print("Start of data loading ...")
 MinkDataProvider = CSVDataProvider(
-    path="../data/data_mink_main_ticks_adjusted.csv", 
+    path="../data/main_mink_adjusted.csv", 
     tickers=MinkTicker.from_ticker_str(file_names),
     index_col='trade_time',
     field_to_price_field_dict={
-        'open_price': PriceField.Open,
-        'highest_price': PriceField.High,
-        'lowest_price': PriceField.Low,
-        'close_price': PriceField.Close,
+        'open_price_adjusted': PriceField.Open,
+        'highest_price_adjusted': PriceField.High,
+        'lowest_price_adjusted': PriceField.Low,
+        'close_price_adjusted': PriceField.Close,
         'volume': PriceField.Volume,
     },
     start_date=datetime(2025, 1, 2, 9, 1),
     end_date=datetime(2025, 11, 30),
     frequency=Frequency.MIN_1,
     dateformat="%Y-%m-%d %H:%M:%S",
-    ticker_col="product_id"
+    ticker_col="unique_instrument_id"
 )
 print("End of data loading.")
 
@@ -126,17 +126,11 @@ print("End of data loading.")
 # session_builder.set_market_open_and_close_time({"hour": 21, "minute": 0}, {"hour": 15, "minute": 0})
 # ts = session_builder.build(datetime(2025, 1, 10, 9, 1), datetime(2025, 5, 30, 15, 0))
 
-# # l1 = MinkDataProvider.historical_price(MinkTicker("RS"), PriceField.Close, 85, datetime(2025, 7, 25, 10, 37))
-l1 = MinkDataProvider.get_history(MinkTicker("BC"), ["close_price", "volume", "DATA_ISSUE", "DATA_ISSUE_SOLUTION"], datetime(2025, 1, 22, 14, 39), datetime(2025, 1, 22, 14, 45))
-
-# # l2 = MinkDataProvider.historical_price(MinkTicker("WR"), PriceField.Close, 5, datetime(2025, 7, 25, 9, 2))
-# l2 = MinkDataProvider.get_history(MinkTicker("WR"), ["close_price", "DATA_ISSUE", "DATA_ISSUE_SOLUTION"], datetime(2025, 7, 24, 14, 59), datetime(2025, 7, 25, 9, 2))
-
-# Print all columns of l1 DataFrame, regardless of width
+l1_1 = MinkDataProvider.historical_price(MinkTicker("BC.INE"), PriceField.Close, 85, datetime(2025, 7, 25, 10, 37))
+l1_2 = MinkDataProvider.get_history(MinkTicker("BC.INE"), ["close_price", "close_price_adjusted", "volume", "DATA_ISSUE", "DATA_ISSUE_SOLUTION"], datetime(2025, 1, 22, 14, 39), datetime(2025, 1, 22, 14, 45))
 with pd.option_context('display.max_columns', None):
-    print(l1)
-    print(l1.dtypes)
-# print(l2, l2.dtypes)
+    print(l1_1)
+    print(l1_2)
         
 class SimpleMAStrategy(AbstractStrategy):
     """

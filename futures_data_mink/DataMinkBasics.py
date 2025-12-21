@@ -156,7 +156,7 @@ class FuturesProcessor(FuturesProcessorBase):
             'contract_mink': ['trading_day', 'trade_time', 'open_price', 'highest_price', 'lowest_price', 'close_price', 'volume', 'unique_instrument_id'],
         }
     
-    def detect_rollover_points(self, rollover_points_cache_path: Optional[str] = None) -> Dict[str, List[ContractRollover]]:
+    def detect_rollover_points(self, rollover_points_cache_path: Optional[str] = None) -> Dict[str, Dict[str, ContractRollover]]:
         """
         检测期货合约的展期点（Rollover Points）。
         
@@ -186,7 +186,7 @@ class FuturesProcessor(FuturesProcessorBase):
             raise ValueError("'product_contract_start_end'数据表为空或不存在")
         
         # 检查是否已经有product_id_list属性
-        if not hasattr(self, 'product_id_list'):
+        if not self.product_id_list:
             self.product_id_list = sorted(all_df['PRODUCT'].unique().tolist())
         if not self.product_id_list:
             raise ValueError("'PRODUCT'列为空")
@@ -194,21 +194,12 @@ class FuturesProcessor(FuturesProcessorBase):
         # 支持缓存rollover_points到本地文件
         if rollover_points_cache_path is not None:
             self.rollover_points_cache_path = rollover_points_cache_path
-        cache_path = getattr(self, 'rollover_points_cache_path', None)
-        if cache_path and os.path.exists(cache_path):
-            with open(cache_path, 'rb') as f:
+        if self.rollover_points_cache_path and os.path.exists(self.rollover_points_cache_path):
+            with open(self.rollover_points_cache_path, 'rb') as f:
                 self.rollover_points = pickle.load(f)
-
-        # 初始化rollover_points字典
-        if not hasattr(self, 'rollover_points'):
-            self.rollover_points = {}
         
         # 遍历每个产品，检测展期点
         for product_id in tqdm(self.product_id_list, desc="Detecting rollover points"):
-            
-            # 初始化该产品的展期点列表
-            if product_id not in self.rollover_points:
-                self.rollover_points[product_id] = {}
 
             # 获取该产品的合约起止日期数据
             df = all_df[all_df['PRODUCT'] == product_id].reset_index(drop=True)
@@ -352,8 +343,8 @@ class FuturesProcessor(FuturesProcessorBase):
                 self.rollover_points[product_id][str(next_start_date.date())] = rollover
         
         # 如果有缓存路径，则保存rollover_points到本地文件
-        if cache_path is not None:
-            with open(cache_path, 'wb') as f:
+        if self.rollover_points_cache_path is not None:
+            with open(self.rollover_points_cache_path, 'wb') as f:
                 pickle.dump(self.rollover_points, f)
 
         # 删除self._contract_dayk_grouped以释放内存
@@ -480,34 +471,28 @@ class FuturesProcessor(FuturesProcessorBase):
             - 结果表会自动合并至已有的rollover_adjustments表，避免重复计算。
         """
 
-        # 判断self是否存在strategy_selector属性
-        if not hasattr(self, 'strategy_selector'):
-            if strategy_selector is not None:
-                self.strategy_selector = strategy_selector
-            else:
-                self.strategy_selector = ProductPeriodStrategySelector(default_strategy={
-                    "AdjustmentStrategy": PercentageAdjustmentStrategy(
-                    old_price_field='close_price', new_price_field='close_price', 
-                    new_price_old_data_bool=True, use_window=False,
-                    description="prev_day_old_close_over_prev_day_new_close",
-                    )
-                })
-            strategy_selector = self.strategy_selector
-        else:
-            if strategy_selector is None:
-                strategy_selector = self.strategy_selector
+        # 设置默认的strategy_selector
+        if strategy_selector is not None:
+            self.strategy_selector = strategy_selector
+        if self.strategy_selector is None:
+            self.strategy_selector = ProductPeriodStrategySelector(default_strategy={
+                "AdjustmentStrategy": PercentageAdjustmentStrategy(
+                old_price_field='close_price', new_price_field='close_price', 
+                new_price_old_data_bool=True, use_window=False,
+                description="prev_day_old_close_over_prev_day_new_close",
+                )
+            })
         
+        # 获取默认的调整策略
         # 检查AdjustmentStrategy是否存在
-        if not hasattr(strategy_selector, "default_strategy") or "AdjustmentStrategy" not in strategy_selector.default_strategy:
+        if "AdjustmentStrategy" not in self.strategy_selector.default_strategy:
             raise ValueError("ProductPeriodStrategySelector.default_strategy 中缺少 'AdjustmentStrategy' 键")
-        
-        # 获取调整策略
-        strategy = strategy_selector.default_strategy["AdjustmentStrategy"]
+        strategy = self.strategy_selector.default_strategy["AdjustmentStrategy"]
         
         # 获取产品ID列表
         if product_id_list is None:
             # 检查是否已经有product_id_list属性
-            if not hasattr(self, 'product_id_list'):
+            if not self.product_id_list:
                 # 获取所有产品的合约起止日期表
                 all_df = self.data_tables.get('product_contract_start_end')
                 if all_df is None or all_df.empty:
@@ -536,7 +521,7 @@ class FuturesProcessor(FuturesProcessorBase):
                 continue
 
             # 获取rollover_points
-            if not hasattr(self, 'rollover_points'):
+            if not self.rollover_points:
                 self.detect_rollover_points()
             elif product_id not in self.rollover_points:
                 raise ValueError(f"{product_id}: 未检测到rollover_points")
@@ -551,7 +536,7 @@ class FuturesProcessor(FuturesProcessorBase):
             # 按照rollover_points的key（日期）从小到大排序遍历
             for idx, rollover_date in enumerate(rollover_keys):
                 rollover = self.rollover_points[product_id][rollover_date]
-                strategy = strategy_selector.get_strategy(product_id, pd.to_datetime(str(rollover_date)))['AdjustmentStrategy']
+                strategy = self.strategy_selector.get_strategy(product_id, pd.to_datetime(str(rollover_date)))['AdjustmentStrategy']
 
                 prev_is_valid = is_valid
                 is_valid, validity_status = strategy.is_valid(rollover)
@@ -681,7 +666,7 @@ class FuturesProcessor(FuturesProcessorBase):
             - 结果表按产品ID拼接，适用于主力合约连续行情的后续分析与建模。
         '''
         # 检查是否已经有product_id_list属性
-        if not hasattr(self, 'product_id_list'):
+        if not self.product_id_list:
             # 获取所有产品的合约起止日期表
             PCSE = self.data_tables.get('product_contract_start_end')
             if PCSE is None or PCSE.empty:
@@ -695,7 +680,7 @@ class FuturesProcessor(FuturesProcessorBase):
             # 确保有rollover_adjustments属性，没有则先跑calculate_adjustment
             if 'rollover_adjustments' not in self.data_tables:
                 self.calculate_adjustment()
-            assert hasattr(self, 'strategy_selector')
+            assert self.strategy_selector is not None
             strategy = self.strategy_selector.default_strategy["AdjustmentStrategy"]
             self._rollover_adjustments_grouped = self.data_tables['rollover_adjustments'].groupby('product_id')
         else:
@@ -818,6 +803,7 @@ class FuturesProcessor(FuturesProcessorBase):
                     # 加载该合约的主合约数据，并按rollover_date筛选
                     # old_contract: 取在rollover_date之前的行（如果有idx-1行，则取[idx-1].rollover_date当天及之后且本行rollover_date之前的行）
                     # new_contract: 取本行rollover_date当天及之后的行（如果有下一行，则只取到[next].rollover_date之前）
+                    assert rollover.new_contract_start_date is not None
                     rollover_date = pd.to_datetime(rollover.new_contract_start_date)
                     # old_contract部分
                     if idx == 0 or (idx > 0 and not self.rollover_points[product_id][rollover_keys[idx - 1]].is_valid):
@@ -827,9 +813,12 @@ class FuturesProcessor(FuturesProcessorBase):
                         if idx == 0:
                             filtered = contract_data[trading_days < rollover_date]
                         else:
-                            prev_rollover_date = pd.to_datetime(self.rollover_points[product_id][rollover_keys[idx - 1]].new_contract_start_date)
+                            prev_rollover = self.rollover_points[product_id][rollover_keys[idx - 1]]
+                            assert prev_rollover.new_contract_start_date is not None
+                            prev_rollover_date = pd.to_datetime(prev_rollover.new_contract_start_date)
                             filtered = contract_data[(trading_days >= prev_rollover_date) & (trading_days < rollover_date)]
                         if add_adjust_col_bool and strategy is not None:
+                            assert self.strategy_selector is not None
                             if product_id in self.strategy_selector.strategy_map and \
                                     len(self.strategy_selector.strategy_map[product_id]) > 0:
                                 max_trading_day = filtered['trading_day'].max()
@@ -849,12 +838,15 @@ class FuturesProcessor(FuturesProcessorBase):
                     trading_days = pd.to_datetime(contract_data['trading_day'])
                     if idx + 1 < len(rollover_keys):
                         last_line = False
-                        next_rollover_date = pd.to_datetime(self.rollover_points[product_id][rollover_keys[idx + 1]].new_contract_start_date)
+                        next_rollover = self.rollover_points[product_id][rollover_keys[idx + 1]]
+                        assert next_rollover.new_contract_start_date is not None
+                        next_rollover_date = pd.to_datetime(next_rollover.new_contract_start_date)
                         filtered = contract_data[(trading_days >= rollover_date) & (trading_days < next_rollover_date)]
                     else:
                         last_line = True
                         filtered = contract_data[trading_days >= rollover_date]
                     if add_adjust_col_bool and strategy is not None:
+                        assert self.strategy_selector is not None
                         if product_id in self.strategy_selector.strategy_map and \
                                 len(self.strategy_selector.strategy_map[product_id]) > 0:
                             min_trading_day = filtered['trading_day'].min()
@@ -907,261 +899,5 @@ class FuturesProcessor(FuturesProcessorBase):
             return self.data_tables['main_contract_series']
         else:
             return pd.DataFrame()
-        
-    @staticmethod
-    def save_data_frame_to_path(data: pd.DataFrame, save_path: Optional[str] = None):
-        '''
-        将DataFrame保存到指定路径的文件中，支持csv和parquet格式。
-        
-        参数:
-            data (pd.DataFrame): 需要保存的DataFrame数据。
-            save_path (str): 保存文件的完整路径，支持以.csv或.parquet结尾的文件名。
-        '''
-        if save_path is not None:
-            if not os.path.exists(os.path.dirname(save_path)):
-                os.makedirs(os.path.dirname(save_path))
-            if save_path.endswith('.csv'):
-                data.to_csv(save_path, index=False)
-            elif save_path.endswith('.parquet'):
-                # Convert Enum columns to string before saving to parquet
-                for col in data.columns:
-                    if data[col].dtype == 'object' and data[col].apply(lambda x: hasattr(x, 'name')).any():
-                        data = data.copy()
-                        data[col] = data[col].apply(lambda x: x.name if hasattr(x, 'name') else x)
-                data.to_parquet(save_path, index=False)
-            else:
-                raise ValueError("仅支持保存为csv或parquet格式文件")
-        
-    def generate_main_contract_series_adjusted(self, 
-                                               data: Optional[pd.DataFrame] = None, save_path: Optional[str] = None,
-                                               price_cols: List[str] = ['open_price', 'highest_price', 'lowest_price', 'close_price'],
-                                               report_bool: bool = True, report_save_path: Optional[str] = None,
-                                               plot_bool: bool = False, plot_col_name: str = 'close_price', plot_save_path: Optional[str] = None,
-                                               plot_start_date: Optional[datetime|str] = None, plot_end_date: Optional[datetime|str] = None,
-                                               plot_sample_step: Optional[int] = None, plot_max_points: int = 5000) -> pd.DataFrame:
-        '''
-        生成主力合约序列的复权行情数据（主力合约连续行情调整后数据）。
-
-        本方法基于已有的主力合约行情数据表（'main_contract_series'），结合价格调整因子（adjustment_mul, adjustment_add），对指定的行情价格字段（如开盘价、最高价、最低价、收盘价）进行复权处理，生成调整后的主力合约连续行情序列。支持输出每个产品的复权数据统计报告，并可选地绘制复权前后的价格对比图。最终结果以DataFrame形式返回，并存入self.data_tables['main_contract_series_adjusted']。
-
-        参数:
-            data (Optional[pd.DataFrame]): 输入的主力合约行情数据表，若为None则自动读取self.data_tables['main_contract_series']。
-            save_path (Optional[str]): 结果保存路径，支持csv或parquet格式。
-            price_cols (List[str]): 需要进行复权调整的行情价格字段列表，默认为['open_price', 'highest_price', 'lowest_price', 'close_price']。
-            report_bool (bool): 是否输出每个产品的复权后行情统计报告，默认为True。
-            report_save_path (Optional[str]): 复权统计报告保存路径。
-            plot_bool (bool): 是否绘制复权前后价格对比图，默认为False。
-            plot_col_name (str): 绘图时使用的价格字段，默认为'close_price'。
-            plot_save_path (Optional[str]): 绘图文件保存文件夹路径。
-            plot_start_date (Optional[datetime|str]): 绘图起始日期，可选。
-            plot_end_date (Optional[datetime|str]): 绘图结束日期，可选。
-            plot_sample_step (Optional[int]): 绘图采样步长，减少点数以加快绘图速度。
-            plot_max_points (int): 单张图最大采样点数，默认为5000。
-
-        返回值:
-            pd.DataFrame: 返回复权调整后的主力合约连续行情数据表。每行包括原始行情数据及对应的复权行情字段（如open_price_adjusted等）。
-
-        异常:
-            ValueError:
-            - 当未找到'main_contract_series'数据表且未传入data参数时抛出。
-            AssertionError:
-            - 当输入数据缺少adjustment_mul或adjustment_add字段时抛出。
-            - 结果表未成功写入self.data_tables时抛出。
-
-        注意事项:
-            - 输入数据需包含adjustment_mul和adjustment_add两列，分别为价格的乘法和加法调整因子。
-            - 复权处理方式为：adjusted_price = 原价 * adjustment_mul + adjustment_add。
-            - 若report_bool为True，将按unique_instrument_id分组输出每个产品的复权行情统计信息（最大值、最小值、有效行数等），并可保存到指定路径。
-            - 若plot_bool为True，将为每个产品绘制复权前后价格对比图，自动标注合约切换点。
-            - 结果表会自动写入self.data_tables['main_contract_series_adjusted']，便于后续分析与调用。
-        '''
-        if data is None:
-            if 'main_contract_series' not in self.data_tables:
-                raise ValueError("'main_contract_series'数据表不存在，请先运行generate_main_contract_series方法")
-            data = self.data_tables['main_contract_series']
-        
-        assert 'adjustment_mul' in data.columns and 'adjustment_add' in data.columns
-
-        adjusted_data = data.copy()
-
-        # 删除所有adjusted列全为NaN的行
-        adjusted_col_names = ['adjustment_mul', 'adjustment_add']
-        if adjusted_col_names:
-            adjusted_data = adjusted_data.dropna(subset=adjusted_col_names, how='all')
-
-        assert 'unique_instrument_id' in data.columns
-        assert 'unique_instrument_id' in adjusted_data.columns
-        
-        # 计算删除行前后的product_id列表差异
-        removed_product_ids = sorted(list(set(data['unique_instrument_id'].unique()) - set(adjusted_data['unique_instrument_id'].unique())))
-        if removed_product_ids:
-            print("删除没有adjustment值的行后减少的product_id列表:", removed_product_ids)
-
-        for col in price_cols:
-            if col in adjusted_data.columns:
-                adjusted_col_name = col + '_adjusted'
-                adjusted_data[adjusted_col_name] = adjusted_data[col] * adjusted_data['adjustment_mul'] + adjusted_data['adjustment_add']
-
-        if report_bool:
-            adjusted_data_grouped = adjusted_data.groupby('unique_instrument_id')
-            all_reports = []
-            for product_id, group in tqdm(adjusted_data_grouped, desc="Generating adjustment reports"):
-                adjusted_rows = group[price_cols].notnull().all(axis=1)
-                report = pd.DataFrame({'product_id': [product_id],
-                                        'num_rows': [len(group)]})
-                if adjusted_rows.any():
-                    first_idx = adjusted_rows.idxmax()
-                    last_idx = adjusted_rows[::-1].idxmax()
-                    report['adjusted_start_date'] = group.loc[first_idx, 'trading_day']
-                    report['adjusted_end_date'] = group.loc[last_idx, 'trading_day']
-                else:
-                    report['adjusted_start_date'] = None
-                    report['adjusted_end_date'] = None
-                
-                for col in price_cols:
-                    adjusted_col_name = col + '_adjusted'
-                    if adjusted_col_name in group.columns:
-                        max_adjusted = group[adjusted_col_name].max()
-                        min_adjusted = group[adjusted_col_name].min()
-                        report[adjusted_col_name + '_max'] = max_adjusted
-                        report[adjusted_col_name + '_min'] = min_adjusted
-                all_reports.append(report)
-            if all_reports:
-                if report_save_path is not None:
-                    self.save_data_frame_to_path(pd.concat(all_reports, ignore_index=True), report_save_path)
-
-        if plot_bool:
-            import matplotlib.pyplot as plt
-
-            # 设置中文字体
-            plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'Microsoft YaHei', 'SimHei', 'Heiti TC', 'STHeiti', 'PingFang SC']
-            plt.rcParams['axes.unicode_minus'] = False
-
-            adjusted_data_grouped = adjusted_data.groupby('unique_instrument_id')
-
-            for product_id, plot_data in tqdm(adjusted_data_grouped, desc="Plotting adjusted prices"):
-                
-                plot_data['trade_time'] = pd.to_datetime(plot_data['trade_time'])
-                if plot_start_date:
-                    plot_start_date = pd.to_datetime(plot_start_date)
-                    plot_data = plot_data[plot_data['trade_time'] >= plot_start_date]
-                if plot_end_date:
-                    plot_end_date = pd.to_datetime(plot_end_date)
-                    plot_data = plot_data[plot_data['trade_time'] <= plot_end_date]
-
-                # 确保plot_sampled中包含所有rollover_points的old_contract_end_date和new_contract_start_date
-                if not hasattr(self, 'rollover_points') or product_id not in self.rollover_points:
-                    self.detect_rollover_points()
-                rollover_dates = []
-                for rollover in self.rollover_points[product_id].values():
-                    rollover_dates.append(pd.to_datetime(rollover.old_contract_end_date))
-                    rollover_dates.append(pd.to_datetime(rollover.new_contract_start_date))
-                rollover_dates = [d for d in rollover_dates if not pd.isnull(d)]
-                # 取所有需要保留的索引
-                must_keep_idx = plot_data[plot_data['trading_day'].isin(rollover_dates)].index.tolist()
-
-                # 抽样以减少数据点，但保留所有rollover点
-                step = max(len(plot_data) // plot_max_points, 1)
-                sampled_idx = set(plot_data.iloc[::(plot_sample_step if plot_sample_step else step)].index.tolist())
-                all_idx = sorted(set(sampled_idx).union(must_keep_idx))
-                plot_sampled = plot_data.loc[all_idx]
-
-                # 创建图表
-                fig, ax = plt.subplots(figsize=(12, 6))
-
-                # 先画切换点的线和文本（在价格线下方）
-                # 先获取y轴范围（先画一条线获取ylim）
-                ax.plot(plot_sampled['trade_time'], plot_sampled[plot_col_name], alpha=0)
-                ylim = ax.get_ylim()
-                for rollover in self.rollover_points[product_id].values():
-                    rv = pd.to_datetime(rollover.new_contract_start_date)
-
-                    # 检查切换点是否在绘图范围内
-                    if plot_start_date and rv < plot_start_date:
-                        continue
-                    if plot_end_date and rv > plot_end_date:
-                        continue
-
-                    ax.axvline(rv, color="#FF9999AB", linestyle='--', alpha=0.5, zorder=1)
-                    # ax.text(
-                    #     rv, ylim[1],
-                    #     f'{rollover.old_contract}→{rollover.new_contract}',
-                    #     rotation=90, va='top', ha='right', fontsize=8, color="#FF9999AB", alpha=0.6, zorder=1
-                    # )
-                # 再画两条价格线（在切换点标记之上）
-                ax.plot(plot_sampled['trade_time'], plot_sampled[plot_col_name], label='原始收盘价', color='blue', alpha=0.7, linewidth=1, zorder=2)
-                ax.plot(plot_sampled['trade_time'], plot_sampled[plot_col_name + '_adjusted'], label='前复权收盘价', color='green', alpha=0.7, linewidth=1, zorder=2)
-
-                # 智能设置x轴刻度
-                self._set_smart_date_ticks(ax, plot_sampled['trade_time'])
-
-                ax.set_title(f'{product_id}: 原始与前复权连续合约价格 ({plot_col_name})')
-                ax.set_xlabel('时间')
-                ax.set_ylabel('价格')
-                ax.legend()
-                ax.grid(True, linestyle='--', alpha=0.5)
-
-                # plt.tight_layout()
-                if plot_save_path is not None:
-                    if not os.path.exists(plot_save_path):
-                        os.makedirs(plot_save_path)
-                    plt.savefig(os.path.join(plot_save_path, f'{product_id}_adjusted_prices.png'), dpi=200, bbox_inches='tight')
-                plt.close()
-
-        self.add_data_table('main_contract_series_adjusted', adjusted_data)
-        assert 'main_contract_series_adjusted' in self.data_tables
-        assert not self.data_tables['main_contract_series_adjusted'].empty
-        self.save_data_frame_to_path(self.data_tables['main_contract_series_adjusted'], save_path)
-        return self.data_tables['main_contract_series_adjusted']
-    
-    @staticmethod
-    def _set_smart_date_ticks(ax, datetimes):
-        """智能设置日期刻度 - 避免AutoDateLocator警告"""
-        import matplotlib.dates as mdates
-        
-        if len(datetimes) == 0:
-            return
-        
-        # 计算时间范围
-        time_range = datetimes.max() - datetimes.min()
-        days = time_range.days
-        hours = time_range.total_seconds() / 3600
-        
-        # 根据时间范围选择合适的刻度间隔
-        if days > 365 * 2:  # 超过2年
-            locator = mdates.YearLocator(1)
-            formatter = mdates.DateFormatter('%Y')
-        elif days > 180:  # 超过6个月
-            locator = mdates.MonthLocator(interval=3)
-            formatter = mdates.DateFormatter('%Y-%m')
-        elif days > 60:  # 超过2个月
-            locator = mdates.MonthLocator(interval=1)
-            formatter = mdates.DateFormatter('%Y-%m')
-        elif days > 14:  # 超过2周
-            locator = mdates.WeekdayLocator(byweekday=mdates.MO.weekday, interval=1)
-            formatter = mdates.DateFormatter('%m-%d')
-        elif days > 2:  # 超过2天
-            locator = mdates.DayLocator(interval=1)
-            formatter = mdates.DateFormatter('%m-%d')
-        elif hours > 12:  # 超过12小时
-            locator = mdates.HourLocator(interval=6)
-            formatter = mdates.DateFormatter('%H:%M')
-        elif hours > 6:  # 超过6小时
-            locator = mdates.HourLocator(interval=2)
-            formatter = mdates.DateFormatter('%H:%M')
-        elif hours > 2:  # 超过2小时
-            locator = mdates.HourLocator(interval=1)
-            formatter = mdates.DateFormatter('%H:%M')
-        else:  # 短时间范围
-            locator = mdates.MinuteLocator(interval=30)
-            formatter = mdates.DateFormatter('%H:%M')
-        
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(formatter)
-        
-        # 自动调整日期标签格式
-        fig = ax.get_figure()
-        if fig:
-            fig.autofmt_xdate()
         
 # End of DataMinkBasics.py
