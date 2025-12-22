@@ -255,9 +255,6 @@ class SpreadAdjustmentStrategy(AdjustmentStrategy):
     def get_name(self) -> str:
         return self.name
 
-    def apply_adjustment_to_results(self, adjustment: float, results: list) -> float:
-        return self.apply_additive_adjustment(adjustment, results)
-
 class WeightedAverageStrategy(AdjustmentStrategy):
     """加权平均复权策略 - 用于处理异常情况"""
     
