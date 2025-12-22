@@ -201,6 +201,10 @@ class FuturesProcessor(FuturesProcessorBase):
         # 遍历每个产品，检测展期点
         for product_id in tqdm(self.product_id_list, desc="Detecting rollover points"):
 
+            # 初始化该产品的rollover_points字典
+            if product_id not in self.rollover_points:
+                self.rollover_points[product_id] = {}
+
             # 获取该产品的合约起止日期数据
             df = all_df[all_df['PRODUCT'] == product_id].reset_index(drop=True)
             
