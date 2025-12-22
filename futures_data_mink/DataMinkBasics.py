@@ -483,7 +483,7 @@ class FuturesProcessor(FuturesProcessorBase):
                 "AdjustmentStrategy": PercentageAdjustmentStrategy(
                 old_price_field='close_price', new_price_field='close_price', 
                 new_price_old_data_bool=True, use_window=False,
-                description="prev_day_old_close_over_prev_day_new_close",
+                description="prev_day_new_close_over_prev_day_old_close",
                 )
             })
         
