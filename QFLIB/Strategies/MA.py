@@ -11,7 +11,7 @@ from utilities import get_price_series
 class SimpleMAStrategy(AbstractStrategy):
     """
     Strategy which computes two simple moving averages (long - 20 minutes, short - 5 minutes)
-    between 10:00 and 14:00, and creates a buy order in case if the short moving average is
+    between start and end market events, and creates a buy order in case if the short moving average is
     greater or equal to the long moving average.
     """
     def __init__(self, ts: BacktestTradingSession, ticker: Ticker, long_ma_len: int = 20, short_ma_len: int = 5):

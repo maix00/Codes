@@ -56,16 +56,16 @@ class ChinaFutures(Ticker):
 # session_builder.set_backtest_name('Simple MA Strategy Demo')
 # session_builder.set_portfolio_currency("CNY")
 
-def local_data_provider_adjusted(ticker_names: str|Sequence[str]) -> ParquetFuturesDataProvider:
+def local_data_provider(ticker_names: str|Sequence[str]) -> ParquetFuturesDataProvider:
     return ParquetFuturesDataProvider(
-        path="../data/main_mink_adjusted.parquet", 
+        path="../data/data_mink_product_2025/" + ticker_name + ".parquet", 
         tickers=ChinaFutures.from_ticker_str(ticker_names),
         index_col='trade_time',
         field_to_price_field_dict={
-            'open_price_adjusted': PriceField.Open,
-            'highest_price_adjusted': PriceField.High,
-            'lowest_price_adjusted': PriceField.Low,
-            'close_price_adjusted': PriceField.Close,
+            'open_price': PriceField.Open,
+            'highest_price': PriceField.High,
+            'lowest_price': PriceField.Low,
+            'close_price': PriceField.Close,
             'volume': PriceField.Volume,
         },
         start_date=datetime(2025, 1, 1, 0, 0),
@@ -76,31 +76,14 @@ def local_data_provider_adjusted(ticker_names: str|Sequence[str]) -> ParquetFutu
         qf_cache_path="../data/main_mink_2025_adjusted_qflib/" + ticker_name
     )
 
-# def local_data_provider(ticker_names: str|Sequence[str]) -> ParquetFuturesDataProvider:
-#     return ParquetFuturesDataProvider(
-#         path="../data/main_mink.parquet", 
-#         tickers=ChinaFutures.from_ticker_str(ticker_names),
-#         index_col='trade_time',
-#         field_to_price_field_dict={
-#             'open_price': PriceField.Open,
-#             'highest_price': PriceField.High,
-#             'lowest_price': PriceField.Low,
-#             'close_price': PriceField.Close,
-#             'volume': PriceField.Volume,
-#         },
-#         start_date=datetime(2025, 1, 1, 0, 0),
-#         end_date=datetime(2025, 12, 31, 23, 59),
-#         frequency=Frequency.MIN_1,
-#         dateformat="%Y-%m-%d %H:%M:%S",
-#         ticker_col="unique_instrument_id",
-#         qf_cache_path="../data/main_mink_2025_qflib/" + ticker_name
-#     )
+with open('./futures_data_mink/unique_instrument_ids.txt', 'r') as f:
+    ticker_names = [line.strip() for line in f.readlines()]
 
-ticker_names = pd.read_parquet("../data/main_mink.parquet")["unique_instrument_id"].unique().tolist()
+# ticker_names = pd.read_parquet("../data/main_mink.parquet")["unique_instrument_id"].unique().tolist()
 # ticker_name = 'BC.INE'
 
 for ticker_name in tqdm(ticker_names, desc="Processing data for tickers"):
-    local_data_provider_adjusted(ticker_names=ticker_name)
+    local_data_provider(ticker_names=ticker_name)
 
 # session_builder.set_data_provider(ChinaFuturesMink2025)
 # session_builder.set_market_open_and_close_time({"hour": 21, "minute": 0}, {"hour": 15, "minute": 0})
