@@ -9,31 +9,18 @@
 """
 
 import pandas as pd
-
 import os
 from tqdm import tqdm
+import shutil
 
 # 文件路径
 unique_ids_file = './futures_data_mink/unique_instrument_ids.txt'
 data_folder = '../data/data_mink/'
 output_folder = '../data/data_mink_product_2025/'
 
-# 创建输出文件夹，如果存在则重命名为加下划线和数字的格式
+# 处理输出文件夹命名冲突
 if os.path.exists(output_folder):
-    max_num = -1
-    base_folder = output_folder.rstrip('/')
-    parent_dir = os.path.dirname(base_folder)
-    folder_name = os.path.basename(base_folder)
-    
-    for item in os.listdir(parent_dir):
-        if item.startswith(folder_name + '_') and item[len(folder_name)+1:].isdigit():
-            num = int(item[len(folder_name)+1:])
-            max_num = max(max_num, num)
-    
-    new_folder_name = f"{base_folder}_{max_num + 1}"
-    os.rename(output_folder, new_folder_name)
-    output_folder = new_folder_name
-
+    shutil.rmtree(output_folder)
 os.makedirs(output_folder, exist_ok=True)
 
 # 读取唯一的instrument_id
