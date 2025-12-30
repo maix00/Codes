@@ -109,27 +109,60 @@ class AdjustmentStrategy(ABC):
         return copy.deepcopy(self)
     
     @staticmethod
-    def apply_multiplicative_adjustment(adjustment: float, results: list):
+    def apply_multiplicative_adjustment(adjustment: float, results: list,
+                                        adjustment_backward_bool: bool = False) -> Optional[float]:
+        adjustment_new = adjustment
         if adjustment is not None and len(results) > 0:
             for r in results:
                 if r.get('is_valid') is not None and r['is_valid'] and r.get('val_adjust_old') is not None:
                     r['val_adjust_old'] *= adjustment
+            if not adjustment_backward_bool:
+                return
+            max_r = max(
+                results,
+                key=lambda r: pd.to_datetime(
+                    r.get('old_contract_start_date') 
+                    if r.get('is_valid') is not None and r['is_valid'] and r.get('reference_time') is not None 
+                    else pd.Timestamp.min
+                )
+            )
+            if max_r.get('val_adjust_new') is not None:
+                adjustment_new = max_r['val_adjust_new'] * adjustment
+            return adjustment_new
+        return adjustment_new
 
     @staticmethod
-    def apply_additive_adjustment(adjustment: float, results: list):
+    def apply_additive_adjustment(adjustment: float, results: list,
+                                  adjustment_backward_bool: bool = False) -> Optional[float]:
+        adjustment_new = adjustment
         if adjustment is not None and len(results) > 0:
             for r in results:
                 if r.get('is_valid') is not None and r['is_valid'] and r.get('val_adjust_old') is not None:
                     r['val_adjust_old'] += adjustment
+            if not adjustment_backward_bool:
+                return
+            max_r = max(
+                results,
+                key=lambda r: pd.to_datetime(
+                    r.get('old_contract_start_date') 
+                    if r.get('is_valid') is not None and r['is_valid'] and r.get('reference_time') is not None 
+                    else pd.Timestamp.min
+                )
+            )
+            if max_r.get('val_adjust_new') is not None:
+                adjustment_new = max_r['val_adjust_new'] + adjustment
+            return adjustment_new
+        return adjustment_new
 
-    def apply_adjustment_to_results(self, adjustment: float, results: list):
+    def apply_adjustment_to_results(self, adjustment: float, results: list, 
+                                    adjustment_backward_bool: bool = False) -> Optional[float]:
         """
         基类方法：对子类开放，允许定向至不同的静态方法
         """
         if self.adjustment_operation == AdjustmentOperation.ADDITIVE:
-            self.apply_additive_adjustment(adjustment, results)
+            return self.apply_additive_adjustment(adjustment, results, adjustment_backward_bool)
         elif self.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
-            self.apply_multiplicative_adjustment(adjustment, results)
+            return self.apply_multiplicative_adjustment(adjustment, results, adjustment_backward_bool)
         else:
             raise ValueError(f"未知的调整操作类型: {self.adjustment_operation}")
 
@@ -139,7 +172,8 @@ class PercentageAdjustmentStrategy(AdjustmentStrategy):
     def __init__(self, use_window: bool = False, window_size: int = 120,
                  old_price_field: str = 'close', new_price_field: str = 'close',
                  new_price_old_data_bool: bool = True, description: Optional[str] = None,
-                 adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
+                 adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD,
+                 adjustment_backward_datetime: Optional[datetime] = None):
         super().__init__(adjustment_direction=adjustment_direction)
         self.use_window = use_window
         self.window_size = window_size
@@ -147,6 +181,8 @@ class PercentageAdjustmentStrategy(AdjustmentStrategy):
         self.new_price_field = new_price_field
         self.new_price_old_data_bool = new_price_old_data_bool
         self.description = description
+        self.adjustment_direction = adjustment_direction
+        self.adjustment_backward_datetime = adjustment_backward_datetime
         self.name = "percentage_window" if use_window else "percentage"
 
     def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:

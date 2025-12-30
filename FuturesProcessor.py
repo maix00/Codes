@@ -22,13 +22,41 @@
 """
 
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional, Tuple, Dict
-from ContractRollover import ContractRollover
+# from ContractRollover import ContractRollover
 from StrategySelector import ProductPeriodStrategySelector
 from tqdm import tqdm
 import os
+from dataclasses import dataclass, field
+
+@dataclass
+class ContractRollover:
+    """合约切换事件的数据结构"""
+
+    # 基础信息
+    old_contract: str
+    new_contract: str
+    rollover_datetime: Optional[datetime] = None  # 切换时间点（新合约开始的时间）
+    datetime_col_name: str = "datetime"  # 时间列名称
+    is_valid: bool = True
     
+    # 四种数据组合
+    old_contract_old_data: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())  # 旧合约的历史数据
+    old_contract_new_data: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())  # 旧合约的当前数据
+    new_contract_old_data: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())  # 新合约的历史数据
+    new_contract_new_data: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())  # 新合约的当前数据
+    
+    # 关键时间点
+    new_contract_start_datetime: Optional[datetime] = None  # 新合约开始时间点
+    new_contract_start_date: Optional[date] = None          # 新合约开始日期
+    new_contract_end_datetime: Optional[datetime] = None    # 新合约结束时间点
+    new_contract_end_date: Optional[date] = None            # 新合约结束日期
+    old_contract_start_datetime: Optional[datetime] = None  # 旧合约开始时间点
+    old_contract_start_date: Optional[date] = None          # 旧合约开始日期
+    old_contract_end_datetime: Optional[datetime] = None    # 旧合约结束时间点
+    old_contract_end_date: Optional[date] = None            # 旧合约结束日期
+
 class DataFrameManager:
     """合约切换点检测器基类"""
     

@@ -1,3 +1,4 @@
+import os
 import warnings
 import pandas as pd
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -14,6 +15,7 @@ from qf_lib.containers.qf_data_array import QFDataArray
 from qf_lib.common.utils.logging.qf_parent_logger import qf_logger
 from qf_lib.common.utils.miscellaneous.to_list_conversion import convert_to_list
 from qf_lib.containers.dataframe.qf_dataframe import QFDataFrame
+from qf_lib.containers.dimension_names import DATES, TICKERS, FIELDS
 from qf_lib.containers.futures.future_tickers.future_ticker import FutureTicker
 from qf_lib.data_providers.helpers import normalize_data_array, tickers_dict_to_data_array
 from qf_lib.data_providers.preset_data_provider import PresetDataProvider
@@ -22,13 +24,14 @@ import pickle
 import gzip
 import lzma
 
-class ParquetFuturesDataProvider(PresetDataProvider):
+class MultipleParquetFuturesDataProvider(PresetDataProvider):
     
-    def __init__(self, path: str, tickers: Union[Ticker, Sequence[Ticker]], index_col: str,
+    def __init__(self, path: Union[str, Dict[str, str]], tickers: Union[Ticker, Sequence[Ticker]], index_col: str,
                  field_to_price_field_dict: Optional[Dict[str, PriceField]] = None,
                  fields: Optional[Union[str, List[str]]] = None, start_date: Optional[datetime] = None,
                  end_date: Optional[datetime] = None, frequency: Optional[Frequency] = Frequency.DAILY,
-                 dateformat: Optional[str] = None, ticker_col: Optional[str] = None, qf_cache_path: Optional[str] = None):
+                 dateformat: Optional[str] = None, ticker_col: Optional[str] = None, 
+                 qf_cache_path: Optional[str] = None, save_cache_mode: bool = False):
 
         self.logger = qf_logger.getChild(self.__class__.__name__)
 
@@ -44,33 +47,35 @@ class ParquetFuturesDataProvider(PresetDataProvider):
         assert start_date is not None and end_date is not None and frequency is not None, \
             "When loading from cache, start_date, end_date and frequency must be provided."
 
-        if qf_cache_path is not None:
-            normalized_data_array = self.load_compressed(qf_cache_path)
-            if normalized_data_array is not None:
-                assert isinstance(normalized_data_array, QFDataArray)
-                if normalized_data_array.size == 0:
-                    normalized_data_array = None
-        else:
+        normalize_data_array_dict = {}
+        for ticker in tickers:
             normalized_data_array = None
-
-        if normalized_data_array is None:
-            assert frequency is not None
-            data_array, start_date, end_date, available_fields = self._get_data(path, tickers, fields, start_date, end_date,
+            if qf_cache_path is not None:
+                normalized_data_array = self.load_compressed(qf_cache_path, ticker_str=ticker.as_string())
+            if normalized_data_array is not None and normalized_data_array.size != 0:
+                self.logger.info(f"Cache for ticker {ticker.as_string()} found.")
+                normalize_data_array_dict[ticker.as_string()] = normalized_data_array
+            else:
+                self.logger.info(f"Cache for ticker {ticker.as_string()} not found.")
+                _path = path[ticker.as_string()] if isinstance(path, dict) else path
+                data_array, start_date, end_date, available_fields = self._get_data(_path, tickers, fields, start_date, end_date,
                                                                                 frequency, field_to_price_field_dict,
                                                                                 index_col, dateformat, ticker_col)
+                normalized_data_array = normalize_data_array(data_array, tickers, available_fields, False, False, False)
+                normalize_data_array_dict[ticker.as_string()] = normalized_data_array
 
-            normalized_data_array = normalize_data_array(data_array, tickers, available_fields, False, False, False)
+                if save_cache_mode and qf_cache_path is not None:
+                    self.save_compressed(normalized_data_array, qf_cache_path, ticker_str=ticker.as_string())
+                    self.logger.info(f"Cache for ticker {ticker.as_string()} saved.")
 
-            self.save_compressed(normalized_data_array, qf_cache_path)
-
-        assert isinstance(normalized_data_array, QFDataArray)
+        normalized_data_array = QFDataArray.concat(list(normalize_data_array_dict.values()), dim=TICKERS)
         super().__init__(data=normalized_data_array,
                          start_date=start_date,
                          end_date=end_date,
                          frequency=frequency)
 
     @staticmethod
-    def save_compressed(obj, filepath, use_lzma=False):
+    def save_compressed(obj, filepath, ticker_str: Optional[str] = None, use_lzma: bool = False):
         """
         Saves and compresses any Python object (e.g., QFDataFrame) to a file.
         Args:
@@ -78,27 +83,30 @@ class ParquetFuturesDataProvider(PresetDataProvider):
             filepath (str): Path for the output file (.pkl.gz or .xz).
             use_lzma (bool): If True, uses LZMA for higher compression.
         """
-        filepath += '.xz' if use_lzma else '.gz'
+        if ticker_str is not None:
+            filepath = os.path.join(filepath, ticker_str + ('.xz' if use_lzma else '.gz'))
+        else:
+            assert filepath.endswith('.xz') if use_lzma else filepath.endswith('.gz')
         open_func = lzma.open if use_lzma else gzip.open
         with open_func(filepath, 'wb') as f:
             assert isinstance(f, gzip.GzipFile) or isinstance(f, lzma.LZMAFile)
             pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+        size = os.path.getsize(filepath)
+        print(f"{filepath} Size: {size}")
 
     @staticmethod
-    def load_compressed(filepath):
+    def load_compressed(filepath, ticker_str: Optional[str] = None, use_lzma: bool = False):
         """
         Loads an object from a compressed file.
         """
         # Detect compression from file extension
-        if Path(filepath + '.xz').exists():
-            filepath += '.xz'
-            open_func = lzma.open
-        elif Path(filepath + '.gz').exists():
-            filepath += '.gz'
-            open_func = gzip.open
+        if ticker_str is not None:
+            filepath = os.path.join(filepath, ticker_str + ('.xz' if use_lzma else '.gz'))
         else:
+            assert filepath.endswith('.xz') if use_lzma else filepath.endswith('.gz')
+        if not Path(filepath).exists():
             return None
-        
+        open_func = lzma.open if use_lzma else gzip.open
         with open_func(filepath, 'rb') as f:
             assert isinstance(f, gzip.GzipFile) or isinstance(f, lzma.LZMAFile)
             return pickle.load(f)

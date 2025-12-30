@@ -28,7 +28,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from Strategies.MA import SimpleMAStrategy
 from tqdm import tqdm
 
-from demo_2 import ParquetFuturesDataProvider
+from demo_2 import MultipleParquetFuturesDataProvider
 
 # settings_path = "./QFLIB/settings.json"
 # secret_settings_path = "../data/QFLIB/secret_settings.json"
@@ -56,9 +56,9 @@ class ChinaFutures(Ticker):
 # session_builder.set_backtest_name('Simple MA Strategy Demo')
 # session_builder.set_portfolio_currency("CNY")
 
-def local_data_provider(ticker_names: str|Sequence[str]) -> ParquetFuturesDataProvider:
-    return ParquetFuturesDataProvider(
-        path="../data/data_mink_product_2025/" + ticker_name + ".parquet", 
+def local_data_provider(ticker_names: str|Sequence[str], save_cache_mode: bool = False) -> MultipleParquetFuturesDataProvider:
+    return MultipleParquetFuturesDataProvider(
+        path={str(ticker_name): "../data/data_mink_product_2025/" + str(ticker_name) + ".parquet" for ticker_name in (ticker_names if isinstance(ticker_names, (list, tuple)) else [ticker_names])},
         tickers=ChinaFutures.from_ticker_str(ticker_names),
         index_col='trade_time',
         field_to_price_field_dict={
@@ -73,7 +73,8 @@ def local_data_provider(ticker_names: str|Sequence[str]) -> ParquetFuturesDataPr
         frequency=Frequency.MIN_1,
         dateformat="%Y-%m-%d %H:%M:%S",
         ticker_col="unique_instrument_id",
-        qf_cache_path="../data/main_mink_2025_adjusted_qflib/" + ticker_name
+        qf_cache_path="../data/main_mink_2025_adjusted_qflib/",
+        save_cache_mode=save_cache_mode
     )
 
 with open('./futures_data_mink/unique_instrument_ids.txt', 'r') as f:
@@ -82,8 +83,14 @@ with open('./futures_data_mink/unique_instrument_ids.txt', 'r') as f:
 # ticker_names = pd.read_parquet("../data/main_mink.parquet")["unique_instrument_id"].unique().tolist()
 # ticker_name = 'BC.INE'
 
-for ticker_name in tqdm(ticker_names, desc="Processing data for tickers"):
-    local_data_provider(ticker_names=ticker_name)
+for idx in tqdm(range(len(ticker_names)), desc="Processing data for neighbor tickers"):
+    if idx + 2 > len(ticker_names):
+        break
+    ticker_name_list = ticker_names[idx: idx + 2]
+    local_data_provider(ticker_names=ticker_name_list)
+
+# for ticker_name in tqdm(ticker_names, desc="Processing data for tickers"):
+#     local_data_provider(ticker_names=ticker_name, save_cache_mode=True)
 
 # session_builder.set_data_provider(ChinaFuturesMink2025)
 # session_builder.set_market_open_and_close_time({"hour": 21, "minute": 0}, {"hour": 15, "minute": 0})

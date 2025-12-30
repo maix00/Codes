@@ -26,13 +26,39 @@
 
 import DataMinkBasics
 from StrategySelector import ProductPeriodStrategySelector
-from AdjustmentStrategy import PercentageAdjustmentStrategy
+from AdjustmentStrategy import AdjustmentDirection, PercentageAdjustmentStrategy
 import pandas as pd
 import cProfile
 import pstats
 
 profiler = cProfile.Profile()
 profiler.enable()
+
+# detector = DataMinkBasics.FuturesProcessor()
+# detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
+# detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping_truncated.parquet'))
+# detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk_truncated.parquet'))
+# detector.rollover_points_cache_path = '../data/rollover_points_cache_truncated.pkl'
+# detector.rollover_adjustments_cache_path = '../data/rollover_adjustments_truncated.csv'
+# detector.calculate_adjustment(adjustment_direction=AdjustmentDirection.ADJUST_NEW, 
+#                               adjustment_backward_datetime=pd.Timestamp('2010-01-01'))
+# detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
+#                                        save_path='../data/main_dayk_csv_truncated/', save_per_product=True,
+#                                        update_mode=True, issues_save_path='../data/main_dayk_issues.csv')
+
+
+# detector = DataMinkBasics.FuturesProcessor()
+# detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
+# detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping.parquet'))
+# detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk.parquet'))
+# detector.rollover_points_cache_path = '../data/rollover_points_cache_truncated.pkl'
+# detector.rollover_adjustments_cache_path = '../data/rollover_adjustments_truncated.csv'
+# # detector.product_id_list = ['A_S.DCE']
+# detector.calculate_adjustment(adjustment_direction=AdjustmentDirection.ADJUST_NEW, 
+#                               adjustment_backward_datetime=pd.Timestamp('2010-01-01'))
+# detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
+#                                        save_path='../data/main_dayk_csv_truncated/', save_per_product=True,
+#                                        update_mode=True, issues_save_path='../data/main_dayk_issues.csv')
 
 detector = DataMinkBasics.FuturesProcessor()
 detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
@@ -42,10 +68,25 @@ detector.rollover_points_cache_path = '../data/rollover_points_cache.pkl'
 detector.rollover_adjustments_cache_path = '../data/rollover_adjustments.csv'
 # detector.product_id_list = ['FU.SHF']
 # detector.detect_rollover_points()
-detector.calculate_adjustment()
+# detector.calculate_adjustment()
+detector.calculate_adjustment(adjustment_direction=AdjustmentDirection.ADJUST_NEW, 
+                              adjustment_backward_datetime=pd.Timestamp('2010-01-01'))
 # detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
-#                                        save_path='../data/main_dayk.parquet',
+#                                        save_path='../data/main_dayk.csv',
 #                                        issues_save_path='../data/main_dayk_issues.csv')
+detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
+                                       save_path='../data/main_dayk/', save_per_product=True,
+                                       update_mode=True, issues_save_path='../data/main_dayk_issues.csv')
+import os
+for product_id in detector.data_tables['product_contract_start_end']['PRODUCT'].unique():
+    if not os.path.exists('../data/main_dayk/' + product_id + '.parquet'):
+        continue
+    detector.generate_main_contract_series_adjusted(data=pd.read_parquet('../data/main_dayk/' + product_id + '.parquet'),
+                                                save_path='../data/main_dayk_adjusted_backward/' + product_id + '.parquet',
+                                                report_bool=False, report_save_path='../data/main_dayk_adjusted_report_backward.csv',
+                                                plot_bool=True, plot_save_path='../data/main_dayk_adjusted_plots_backward/')
+
+
 # detector.generate_main_contract_series(source_data_label='mink', 
 #                                        source_data_folder_UID_path='../data/data_mink_product_2025/',
 #                                        add_adjust_col_bool=True,
