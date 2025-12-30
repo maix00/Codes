@@ -54,4 +54,4 @@ for unique_id in tqdm(unique_instrument_ids):
     output_file_path = os.path.join(output_folder, f'{unique_id}.parquet')
     filtered_data.to_parquet(output_file_path, index=False)
 
-# End of file futures_data_mink/futures_data_mink_check_3.py
+# End of file futures_data/check_3.py

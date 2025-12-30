@@ -39,7 +39,7 @@ for file_path in parquet_files:
 unique_ids_list = sorted(list(all_unique_ids))
 
 # Write to file in current directory
-output_file = Path('./futures_data_mink/unique_instrument_ids.txt')
+output_file = Path('./futures_data/unique_instrument_ids.txt')
 with open(output_file, 'w') as f:
     for instrument_id in unique_ids_list:
         f.write(f"{instrument_id}\n")
@@ -47,4 +47,4 @@ with open(output_file, 'w') as f:
 print(f"Total unique instruments: {len(unique_ids_list)}")
 print(f"Results saved to {output_file}")
 
-# End of file futures_data_mink/futures_data_mink_check_2.py
+# End of file futures_data/check_2.py

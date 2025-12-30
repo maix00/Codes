@@ -1,26 +1,13 @@
 """
-DataMinkBasics.py
+本模块为期货数据处理的基础组件，围绕主力合约序列的生成、合约切换点检测、价格复权调整和数据质量检测等核心需求，提供了完整的处理流程和接口。主要内容包括：
 
-本模块为期货数据处理基础工具，提供期货合约唯一标识符（unique_instrument_id）、产品代码（product_id）与 Wind 代码（windcode）之间的相互转换函数。
+- 合约唯一标识与Wind代码互转的工具函数。
+- FuturesProcessor 类：继承自 FuturesProcessorBase，实现了合约行情数据加载、展期点（切换点）自动检测、价格调整因子（复权因子）计算、主力合约连续行情拼接、复权处理、数据质量检测与修正等功能。
+- 支持灵活配置的复权策略（AdjustmentStrategy 及其子类），可按需选择加法、乘法、窗口均值等多种方式。
+- 数据表的标准化管理，兼容CSV与Parquet格式，支持分产品保存、数据缓存与批量处理。
+- 提供主力合约行情的复权统计报告与可视化绘图接口，便于分析和质量追踪。
 
-主要内容包括：
-- 交易所代码映射表（exchange_map）
-- 当前年份十位数字的获取方法
-- unique_instrument_id 与 product_id、windcode 之间的转换函数
-
-函数说明：
-- unique_instrument_id_to_product_id(unique_instrument_id: str) -> str
-    将 unique_instrument_id 转换为产品代码（product_id），若以 'F' 结尾则加 '_F' 后缀。
-- unique_instrument_id_to_windcode(unique_instrument_id: str) -> str
-    将 unique_instrument_id 转换为 Wind 代码（windcode），格式为“产品代码+月份.交易所代码”。
-- unique_instrument_id_to_windcode_simp(unique_instrument_id: str) -> str
-    将 unique_instrument_id 转换为简化版 Wind 代码，月份部分去掉首位字符。
-- windcode_to_unique_instrument_id(windcode: str, decade_str: str = year_tens) -> str
-    将 Wind 代码转换为 unique_instrument_id，自动补全年份十位数字。
-
-注意事项：
-- 所有函数假定 unique_instrument_id 格式为“交易所|F|产品代码|月份”。
-- 输入格式不正确时，函数会抛出 ValueError 异常。
+本模块适用于期货主力合约序列的批量生成、合约切换点检测、历史行情复权处理及数据质量管理等场景，便于扩展和集成到量化研究与数据分析流程中。
 """
 
 from datetime import datetime, date
@@ -28,11 +15,10 @@ from typing import List, Dict, Optional, Tuple
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # from ContractRollover import ContractRollover
-from FuturesProcessor import FuturesProcessorBase, ContractRollover
+from FuturesProcessor import FuturesProcessorBase, ContractRollover, ValidityStatus, \
+    AdjustmentStrategy, PercentageAdjustmentStrategy, AdjustmentDirection, AdjustmentOperation
 from StrategySelector import ProductPeriodStrategySelector
 from DataQualityChecker import DataQualityChecker, DataIssueLabel, DataIssueSolution
-from AdjustmentStrategy import ValidityStatus, AdjustmentStrategy, PercentageAdjustmentStrategy, \
-    AdjustmentDirection, AdjustmentOperation
 import pandas as pd
 from tqdm import tqdm
 import pickle
@@ -1281,7 +1267,7 @@ class FuturesProcessor(FuturesProcessorBase):
             # 智能设置x轴刻度
             self._set_smart_date_ticks(ax, plot_sampled[time_col])
 
-            ax.set_title(f'{uid}: 原始与前复权连续合约价格 ({plot_col_name})')
+            ax.set_title(f'{uid}: 原始与复权连续合约价格 ({plot_col_name})')
             ax.set_xlabel('时间')
             ax.set_ylabel('价格')
             ax.legend()

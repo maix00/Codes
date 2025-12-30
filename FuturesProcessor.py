@@ -1,33 +1,20 @@
 """
-本模块提供期货合约切换点检测的基础类 FuturesProcessorBase 及其相关工具方法，旨在为不同类型的切换点检测器提供统一的数据表管理、列名映射、数据校验和切换点提取等通用能力。
-
-主要功能包括：
-1. 数据表管理：支持多种标准数据表（如 main_tick、date_main_close_last 等），可通过列名映射适配不同来源的数据格式，便于灵活加载和处理。
-2. 列结构校验：自动检查数据表是否包含必需列和期望列，确保后续检测逻辑的正确性和健壮性。
-3. 切换点检测接口：定义 detect_rollover_points 等方法，要求子类实现具体的切换点检测逻辑，支持多种检测策略扩展。
-4. 合约数据提取辅助：提供辅助方法，便于从主数据表中提取特定合约在切换点前后的连续数据片段，用于切换事件的构建和验证。
-5. 数据表可用性检查：支持列出、校验和获取标准化后的数据表，便于调试和上层逻辑调用。
-
-输入参数：
-- column_mapping：可选，字典类型，为每个数据表指定用户列名到标准列名的映射关系。
-- data_tables：可选，字典类型，直接传入各标准表名对应的 pandas.DataFrame 数据。
-
-输出能力：
-- 可通过 get_mapped_table 方法获取标准化后的数据表。
-- 可通过 detect_rollover_points 方法（需子类实现）输出合约切换点列表（ContractRollover 对象）。
-- 提供辅助方法输出数据表的可用性、列结构校验结果等信息。
-
-适用场景：
-本基类适用于期货主力合约切换点的自动检测，便于扩展不同数据结构和检测策略的子类实现，提升数据处理的灵活性和可维护性。
+本模块提供期货合约切换与复权处理的基础框架，包含合约切换事件的数据结构、数据表管理器、以及多种复权策略的实现。
+主要内容包括：
+- ContractRollover：用于描述期货合约切换事件及其相关数据。
+- DataFrameManager：数据表管理与标准化的基类，支持列名映射、数据表校验等功能。
+- FuturesProcessorBase：期货主力合约处理的基类，定义切换点检测、复权因子计算等接口。
+- 多种复权策略（AdjustmentStrategy 及其子类）：包括百分比复权、价差复权、加权平均复权和手动覆盖策略，支持窗口均值、加权等多种方式。
+- 相关辅助枚举类型和静态方法。
+本模块适用于期货主力合约序列的生成、合约切换点检测、以及历史行情的复权处理等场景，便于扩展和自定义不同的复权策略。
 """
 
+from abc import ABC, abstractmethod
 import pandas as pd
 from datetime import datetime, date
 from typing import List, Optional, Tuple, Dict
-# from ContractRollover import ContractRollover
 from StrategySelector import ProductPeriodStrategySelector
-from tqdm import tqdm
-import os
+from enum import Enum
 from dataclasses import dataclass, field
 
 @dataclass
@@ -341,68 +328,6 @@ class FuturesProcessorBase(DataFrameManager):
         """
         raise NotImplementedError("detect_rollover_points方法需要在子类中实现")
 
-    # def _extract_contract_data(self, main_data: pd.DataFrame, contract: str, 
-    #                          reference_time: datetime, is_old: bool) -> pd.DataFrame:
-    #     """
-    #     从数据中提取特定合约的数据，通过向上或向下遍历确保连续性
-        
-    #     Args:
-    #         main_data: 数据
-    #         contract: 合约代码
-    #         reference_time: 参考时间点
-    #         is_old: 是否为旧合约（True表示向上遍历，False表示向下遍历）
-            
-    #     Returns:
-    #         特定合约的连续数据
-            
-    #     Raises:
-    #         ValueError: 当找不到参考时间点的数据时
-    #     """
-    #     if main_data is None or main_data.empty:
-    #         return pd.DataFrame()
-            
-    #     # 按时间排序
-    #     main_data = main_data.sort_values('datetime').reset_index(drop=True)
-        
-    #     # 直接寻找对应参考时间点的数据
-    #     exact_match = main_data[main_data['datetime'] == reference_time]
-    #     if exact_match.empty:
-    #         raise ValueError(f"在数据中找不到时间点 {reference_time} 的数据")
-            
-    #     reference_idx = exact_match.index[0]
-        
-    #     # 确认参考点是正确的合约
-    #     if main_data.loc[reference_idx, 'symbol'] != contract:
-    #         raise ValueError(f"时间点 {reference_time} 的数据合约 {main_data.loc[reference_idx, 'symbol']} 与目标合约 {contract} 不匹配")
-        
-    #     if is_old:
-    #         # 对于旧合约，从参考时间点向上遍历（向过去遍历）直到symbol变化
-    #         # 向上遍历找到该合约的起始位置
-    #         start_idx = reference_idx
-    #         while start_idx >= 0 and main_data.loc[start_idx, 'symbol'] == contract:
-    #             start_idx -= 1
-    #         start_idx += 1  # 回到第一个匹配的索引
-            
-    #         # 从起始位置到参考时间点就是我们需要的旧合约数据
-    #         result_data = main_data.iloc[start_idx:reference_idx+1].copy()
-            
-    #     else:
-    #         # 对于新合约，从参考时间点向下遍历（向未来遍历）直到symbol变化
-    #         # 向下遍历找到该合约的结束位置
-    #         end_idx = reference_idx
-    #         while end_idx < len(main_data) and main_data.loc[end_idx, 'symbol'] == contract:
-    #             end_idx += 1
-                
-    #         # 从参考时间点到结束位置就是我们需要的新合约数据
-    #         result_data = main_data.iloc[reference_idx:end_idx].copy()
-            
-    #     if result_data.empty:
-    #         print(f"  警告: 合约 {contract} 在指定方向上无连续数据")
-    #         return pd.DataFrame()
-            
-    #     print(f"  提取到 {len(result_data)} 条{'旧' if is_old else '新'}合约 {contract} 的数据")
-    #     return result_data.reset_index(drop=True)
-
     def calculate_adjustment(self, strategy_selector: ProductPeriodStrategySelector, *args, **kwargs) -> pd.DataFrame:
         """
         根据ProductPeriodStrategySelector对象获取对应的adjustment_factor，并存储adjustmentstrategy信息
@@ -424,502 +349,350 @@ class FuturesProcessorBase(DataFrameManager):
         """
         raise NotImplementedError("generate_main_contract_series方法需要在子类中实现")
     
-    @staticmethod
-    def save_data_frame_to_path(data: pd.DataFrame, save_path: Optional[str] = None):
-        '''
-        将DataFrame保存到指定路径的文件中，支持csv和parquet格式。
+class ValidityStatus(Enum):
+    VALID = "valid"
+    INVALID_ZERO_DIVISION = "invalid_zero_division"
+    INSUFFICIENT_DATA = "insufficient_data"
+    LATER_INSUFFICIENT_DATA = "later_insufficient_data"
+    NEGATIVE_PRICES = "negative_prices"
+    MANUALLY_OVERRIDDEN_VALID = "manually_overridden_valid"
+    MANUALLY_OVERRIDDEN_INVALID = "manually_overridden_invalid"
+
+class AdjustmentDirection(Enum):
+    ADJUST_OLD = 0
+    ADJUST_NEW = 1
+
+class AdjustmentOperation(Enum):
+    MULTIPLICATIVE = 0
+    ADDITIVE = 1
+
+@staticmethod
+def calculate_settlement(rollover: 'ContractRollover',
+                            old_price_field: str,
+                            new_price_field: str,
+                            window_size: int,
+                            new_price_old_data_bool: bool) -> Tuple[float, float]:
+    """
+    计算窗口内的旧合约和新合约的结算价格均值
+
+    Args:
+        rollover: ContractRollover对象
+        old_price_field: 旧合约价格字段名
+        new_price_field: 新合约价格字段名
+        window_size: 窗口大小（行数）
+
+    Returns:
+        (旧合约结算均值, 新合约结算均值)
+    """
+    old_prices = rollover.old_contract_old_data[old_price_field].iloc[-window_size:]
+    if new_price_old_data_bool:
+        new_prices = rollover.new_contract_old_data[new_price_field].iloc[-window_size:]
+    else:
+        new_prices = rollover.new_contract_new_data[new_price_field].iloc[:window_size]
+    old_price = float(old_prices.mean()) if not old_prices.empty else 0.0
+    new_price = float(new_prices.mean()) if not new_prices.empty else 0.0
+    return old_price, new_price
+
+class AdjustmentStrategy(ABC):
+    """复权策略基类"""
+
+    def __init__(self, adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
+        self.adjustment_direction = adjustment_direction
+        self.adjustment_operation: AdjustmentOperation = AdjustmentOperation.MULTIPLICATIVE
+        self.description: Optional[str] = None
+    
+    @abstractmethod
+    def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
+        """
+        计算调整因子和价差
         
-        参数:
-            data (pd.DataFrame): 需要保存的DataFrame数据。
-            save_path (str): 保存文件的完整路径，支持以.csv或.parquet结尾的文件名。
-        '''
-        if save_path is not None:
-            if not os.path.exists(os.path.dirname(save_path)):
-                os.makedirs(os.path.dirname(save_path))
-            if save_path.endswith('.csv'):
-                data.to_csv(save_path, index=False)
-            elif save_path.endswith('.parquet'):
-                # Convert Enum columns to string before saving to parquet
-                for col in data.columns:
-                    if data[col].dtype == 'object' and data[col].apply(lambda x: hasattr(x, 'name')).any():
-                        data = data.copy()
-                        data[col] = data[col].apply(lambda x: x.name if hasattr(x, 'name') else x)
-                data.to_parquet(save_path, index=False)
+        Returns:
+            Tuple[调整因子, 价差]
+        """
+        pass
+    
+    @abstractmethod
+    def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
+        """
+        检查策略是否适用于给定的切换事件
+        
+        Returns:
+            Tuple[是否有效, 状态]
+        """
+        pass
+    
+    @abstractmethod
+    def get_name(self) -> str:
+        """获取策略名称"""
+        pass
+    
+    def clone(self) -> 'AdjustmentStrategy':
+        """创建策略的副本"""
+        import copy
+        return copy.deepcopy(self)
+    
+    @staticmethod
+    def apply_multiplicative_adjustment(adjustment: float, results: list,
+                                        adjustment_backward_bool: bool = False) -> Optional[float]:
+        adjustment_new = adjustment
+        if adjustment is not None and len(results) > 0:
+            for r in results:
+                if r.get('is_valid') is not None and r['is_valid'] and r.get('val_adjust_old') is not None:
+                    r['val_adjust_old'] *= adjustment
+            if not adjustment_backward_bool:
+                return
+            max_r = max(
+                results,
+                key=lambda r: pd.to_datetime(
+                    r.get('old_contract_start_date') 
+                    if r.get('is_valid') is not None and r['is_valid'] and r.get('reference_time') is not None 
+                    else pd.Timestamp.min
+                )
+            )
+            if max_r.get('val_adjust_new') is not None:
+                adjustment_new = max_r['val_adjust_new'] * adjustment
+            return adjustment_new
+        return adjustment_new
+
+    @staticmethod
+    def apply_additive_adjustment(adjustment: float, results: list,
+                                  adjustment_backward_bool: bool = False) -> Optional[float]:
+        adjustment_new = adjustment
+        if adjustment is not None and len(results) > 0:
+            for r in results:
+                if r.get('is_valid') is not None and r['is_valid'] and r.get('val_adjust_old') is not None:
+                    r['val_adjust_old'] += adjustment
+            if not adjustment_backward_bool:
+                return
+            max_r = max(
+                results,
+                key=lambda r: pd.to_datetime(
+                    r.get('old_contract_start_date') 
+                    if r.get('is_valid') is not None and r['is_valid'] and r.get('reference_time') is not None 
+                    else pd.Timestamp.min
+                )
+            )
+            if max_r.get('val_adjust_new') is not None:
+                adjustment_new = max_r['val_adjust_new'] + adjustment
+            return adjustment_new
+        return adjustment_new
+
+    def apply_adjustment_to_results(self, adjustment: float, results: list, 
+                                    adjustment_backward_bool: bool = False) -> Optional[float]:
+        """
+        基类方法：对子类开放，允许定向至不同的静态方法
+        """
+        if self.adjustment_operation == AdjustmentOperation.ADDITIVE:
+            return self.apply_additive_adjustment(adjustment, results, adjustment_backward_bool)
+        elif self.adjustment_operation == AdjustmentOperation.MULTIPLICATIVE:
+            return self.apply_multiplicative_adjustment(adjustment, results, adjustment_backward_bool)
+        else:
+            raise ValueError(f"未知的调整操作类型: {self.adjustment_operation}")
+
+class PercentageAdjustmentStrategy(AdjustmentStrategy):
+    """百分比复权策略"""
+    
+    def __init__(self, use_window: bool = False, window_size: int = 120,
+                 old_price_field: str = 'close', new_price_field: str = 'close',
+                 new_price_old_data_bool: bool = True, description: Optional[str] = None,
+                 adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD,
+                 adjustment_backward_datetime: Optional[datetime] = None):
+        super().__init__(adjustment_direction=adjustment_direction)
+        self.use_window = use_window
+        self.window_size = window_size
+        self.old_price_field = old_price_field
+        self.new_price_field = new_price_field
+        self.new_price_old_data_bool = new_price_old_data_bool
+        self.description = description
+        self.adjustment_direction = adjustment_direction
+        self.adjustment_backward_datetime = adjustment_backward_datetime
+        self.name = "percentage_window" if use_window else "percentage"
+
+    def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
+        if self.use_window:
+            old_price, new_price = calculate_settlement(
+                rollover,
+                self.old_price_field,
+                self.new_price_field,
+                self.window_size,
+                self.new_price_old_data_bool
+            )
+        else:
+            old_price = rollover.old_contract_old_data[self.old_price_field].iloc[-1]
+            if self.new_price_old_data_bool:
+                new_price = rollover.new_contract_old_data[self.new_price_field].iloc[-1]
             else:
-                raise ValueError("仅支持保存为csv或parquet格式文件")
-        
-    def generate_main_contract_series_adjusted(self, 
-                                               data: Optional[pd.DataFrame] = None, save_path: Optional[str] = None,
-                                               uid_col: str = 'unique_instrument_id', time_col: str = 'trade_time', rollover_idx_col: str = 'trading_day',
-                                               price_cols: List[str] = ['open_price', 'highest_price', 'lowest_price', 'close_price'],
-                                               report_bool: bool = True, report_save_path: Optional[str] = None,
-                                               plot_bool: bool = False, plot_col_name: str = 'close_price', plot_save_path: Optional[str] = None,
-                                               plot_start_date: Optional[datetime|str] = None, plot_end_date: Optional[datetime|str] = None,
-                                               plot_sample_step: Optional[int] = None, plot_max_points: int = 5000) -> pd.DataFrame:
-        '''
-        生成主力合约序列的复权行情数据（主力合约连续行情调整后数据）。
-
-        本方法基于已有的主力合约行情数据表（'main_contract_series'），结合价格调整因子（adjustment_mul, adjustment_add），对指定的行情价格字段（如开盘价、最高价、最低价、收盘价）进行复权处理，生成调整后的主力合约连续行情序列。支持输出每个产品的复权数据统计报告，并可选地绘制复权前后的价格对比图。最终结果以DataFrame形式返回，并存入self.data_tables['main_contract_series_adjusted']。
-
-        参数:
-            data (Optional[pd.DataFrame]): 输入的主力合约行情数据表，若为None则自动读取self.data_tables['main_contract_series']。
-            save_path (Optional[str]): 结果保存路径，支持csv或parquet格式。
-            price_cols (List[str]): 需要进行复权调整的行情价格字段列表，默认为['open_price', 'highest_price', 'lowest_price', 'close_price']。
-            report_bool (bool): 是否输出每个产品的复权后行情统计报告，默认为True。
-            report_save_path (Optional[str]): 复权统计报告保存路径。
-            plot_bool (bool): 是否绘制复权前后价格对比图，默认为False。
-            plot_col_name (str): 绘图时使用的价格字段，默认为'close_price'。
-            plot_save_path (Optional[str]): 绘图文件保存文件夹路径。
-            plot_start_date (Optional[datetime|str]): 绘图起始日期，可选。
-            plot_end_date (Optional[datetime|str]): 绘图结束日期，可选。
-            plot_sample_step (Optional[int]): 绘图采样步长，减少点数以加快绘图速度。
-            plot_max_points (int): 单张图最大采样点数，默认为5000。
-
-        返回值:
-            pd.DataFrame: 返回复权调整后的主力合约连续行情数据表。每行包括原始行情数据及对应的复权行情字段（如open_price_adjusted等）。
-
-        异常:
-            ValueError:
-            - 当未找到'main_contract_series'数据表且未传入data参数时抛出。
-            AssertionError:
-            - 当输入数据缺少adjustment_mul或adjustment_add字段时抛出。
-            - 结果表未成功写入self.data_tables时抛出。
-
-        注意事项:
-            - 输入数据需包含adjustment_mul和adjustment_add两列，分别为价格的乘法和加法调整因子。
-            - 复权处理方式为：adjusted_price = 原价 * adjustment_mul + adjustment_add。
-            - 若report_bool为True，将按unique_instrument_id分组输出每个产品的复权行情统计信息（最大值、最小值、有效行数等），并可保存到指定路径。
-            - 若plot_bool为True，将为每个产品绘制复权前后价格对比图，自动标注合约切换点。
-            - 结果表会自动写入self.data_tables['main_contract_series_adjusted']，便于后续分析与调用。
-        '''
-        if data is None:
-            if 'main_contract_series' not in self.data_tables:
-                raise ValueError("'main_contract_series'数据表不存在，请先运行generate_main_contract_series方法")
-            data = self.data_tables['main_contract_series']
-        
-        assert 'adjustment_mul' in data.columns and 'adjustment_add' in data.columns
-
-        adjusted_data = data.copy()
-
-        # 删除所有adjusted列全为NaN的行
-        adjusted_col_names = ['adjustment_mul', 'adjustment_add']
-        if adjusted_col_names:
-            adjusted_data = adjusted_data.dropna(subset=adjusted_col_names, how='all')
-
-        assert uid_col in data.columns
-        assert uid_col in adjusted_data.columns
-        
-        # 计算删除行前后的product_id列表差异
-        removed_product_ids = sorted(list(set(data[uid_col].unique()) - set(adjusted_data[uid_col].unique())))
-        if removed_product_ids:
-            print("删除没有adjustment值的行后减少的product_id列表:", removed_product_ids)
-
-        for col in price_cols:
-            if col in adjusted_data.columns:
-                adjusted_col_name = col + '_adjusted'
-                adjusted_data[adjusted_col_name] = adjusted_data[col] * adjusted_data['adjustment_mul'] + adjusted_data['adjustment_add']
-
-        if report_bool:
-            adjusted_data_grouped = adjusted_data.groupby(uid_col)
-            all_reports = []
-            for product_id, group in tqdm(adjusted_data_grouped, desc="Generating adjustment reports"):
-                adjusted_rows = group[price_cols].notnull().all(axis=1)
-                report = pd.DataFrame({'product_id': [product_id],
-                                        'num_rows': [len(group)]})
-                if adjusted_rows.any():
-                    first_idx = adjusted_rows.idxmax()
-                    last_idx = adjusted_rows[::-1].idxmax()
-                    report['adjusted_start_date'] = group.loc[first_idx, rollover_idx_col]
-                    report['adjusted_end_date'] = group.loc[last_idx, rollover_idx_col]
-                else:
-                    report['adjusted_start_date'] = None
-                    report['adjusted_end_date'] = None
-                
-                for col in price_cols:
-                    adjusted_col_name = col + '_adjusted'
-                    if adjusted_col_name in group.columns:
-                        max_adjusted = group[adjusted_col_name].max()
-                        min_adjusted = group[adjusted_col_name].min()
-                        report[adjusted_col_name + '_max'] = max_adjusted
-                        report[adjusted_col_name + '_min'] = min_adjusted
-                all_reports.append(report)
-            if all_reports:
-                if report_save_path is not None:
-                    self.save_data_frame_to_path(pd.concat(all_reports, ignore_index=True), report_save_path)
-
-        if plot_bool:
-            self.plot_adjusted(data=data, adjusted_data=adjusted_data, uid_col=uid_col, time_col=time_col,
-                               rollover_idx_col=rollover_idx_col, plot_col_name=plot_col_name,
-                               plot_save_path=plot_save_path, plot_start_date=plot_start_date,
-                               plot_end_date=plot_end_date, plot_sample_step=plot_sample_step,
-                               plot_max_points=plot_max_points)
-
-        self.add_data_table('main_contract_series_adjusted', adjusted_data)
-        assert 'main_contract_series_adjusted' in self.data_tables
-        assert not self.data_tables['main_contract_series_adjusted'].empty
-        self.save_data_frame_to_path(self.data_tables['main_contract_series_adjusted'], save_path)
-        return self.data_tables['main_contract_series_adjusted']
-    
-    def plot_adjusted(self, data: pd.DataFrame, adjusted_data: pd.DataFrame, uid_col: str = 'unique_instrument_id',
-                      time_col: str = 'trade_time', rollover_idx_col: str = 'trading_day',
-                      plot_col_name: str = 'close_price', plot_save_path: Optional[str] = None,
-                      plot_start_date: Optional[datetime|str] = None, plot_end_date: Optional[datetime|str] = None,
-                      plot_sample_step: Optional[int] = None, plot_max_points: int = 5000):
-        '''绘制复权前后的价格对比图，标注合约切换点。'''
-        import matplotlib.pyplot as plt
-        import matplotlib.dates as mdates
-
-        # 设置中文字体
-        plt.rcParams['font.sans-serif'] = ['Arial Unicode MS', 'Microsoft YaHei', 'SimHei', 'Heiti TC', 'STHeiti', 'PingFang SC']
-        plt.rcParams['axes.unicode_minus'] = False
-
-        adjusted_data_grouped = adjusted_data.groupby(uid_col)
-
-        if plot_start_date:
-            plot_start_date = pd.to_datetime(plot_start_date)
-        if plot_end_date:
-            plot_end_date = pd.to_datetime(plot_end_date)
-
-        for uid, plot_data in tqdm(adjusted_data_grouped, desc="Plotting adjusted prices"):
-
-            assert type(uid) == str
+                new_price = rollover.new_contract_new_data[self.new_price_field].iloc[0]
             
-            plot_data[time_col] = pd.to_datetime(plot_data[time_col])
-            if plot_start_date:
-                plot_data = plot_data[plot_data[time_col] >= plot_start_date]
-            if plot_end_date:
-                plot_data = plot_data[plot_data[time_col] <= plot_end_date]
-
-            # 确保plot_sampled中包含所有rollover_points的old_contract_end_date和new_contract_start_date
-            if not self.rollover_points or uid not in self.rollover_points:
-                self.detect_rollover_points()
-            rollover_dates = []
-            for rollover in self.rollover_points[uid].values():
-                assert rollover.old_contract_end_date is not None and rollover.new_contract_start_date is not None
-                rollover_dates.append(pd.to_datetime(rollover.old_contract_end_date))
-                rollover_dates.append(pd.to_datetime(rollover.new_contract_start_date))
-            rollover_dates = [d for d in rollover_dates if not pd.isnull(d)]
-            # 取所有需要保留的索引
-            must_keep_idx = plot_data[plot_data[rollover_idx_col].isin(rollover_dates)].index.tolist()
-
-            # 抽样以减少数据点，但保留所有rollover点
-            step = max(len(plot_data) // plot_max_points, 1)
-            sampled_idx = set(plot_data.iloc[::(plot_sample_step if plot_sample_step else step)].index.tolist())
-            all_idx = sorted(set(sampled_idx).union(must_keep_idx))
-            plot_sampled = plot_data.loc[all_idx]
-
-            # 创建图表
-            fig, ax = plt.subplots(figsize=(12, 6))
-
-            # 先画切换点的线和文本（在价格线下方）
-            # 先获取y轴范围（先画一条线获取ylim）
-            ax.plot(plot_sampled[time_col], plot_sampled[plot_col_name], alpha=0)
-            ylim = ax.get_ylim()
-            for rollover in self.rollover_points[uid].values():
-                assert rollover.new_contract_start_date is not None
-                rv = pd.to_datetime(rollover.new_contract_start_date)
-
-                # 检查切换点是否在绘图范围内
-                if plot_start_date and rv < plot_start_date:
-                    continue
-                if plot_end_date and rv > plot_end_date:
-                    continue
-                
-                rv_num = float(mdates.date2num(rv))
-                ax.axvline(rv_num, color="#FF9999AB", linestyle='--', alpha=0.5, zorder=1)
-                # ax.text(
-                #     rv, ylim[1],
-                #     f'{rollover.old_contract}→{rollover.new_contract}',
-                #     rotation=90, va='top', ha='right', fontsize=8, color="#FF9999AB", alpha=0.6, zorder=1
-                # )
-
-            # 再画两条价格线（在切换点标记之上）
-            ax.plot(plot_sampled[time_col], plot_sampled[plot_col_name], label='Original', color='blue', alpha=0.7, linewidth=1, zorder=2)
-            ax.plot(plot_sampled[time_col], plot_sampled[plot_col_name + '_adjusted'], label='Adjusted', color='green', alpha=0.7, linewidth=1, zorder=2)
-
-            # 智能设置x轴刻度
-            self._set_smart_date_ticks(ax, plot_sampled[time_col])
-
-            ax.set_title(f'{uid}: 原始与前复权连续合约价格 ({plot_col_name})')
-            ax.set_xlabel('时间')
-            ax.set_ylabel('价格')
-            ax.legend()
-            ax.grid(True, linestyle='--', alpha=0.5)
-
-            # plt.tight_layout()
-            if plot_save_path is not None:
-                if not os.path.exists(plot_save_path):
-                    os.makedirs(plot_save_path)
-                plt.savefig(os.path.join(plot_save_path, f'{uid}_adjusted_prices.png'), dpi=200, bbox_inches='tight')
-            plt.close()
+        if old_price == 0:
+            print(f"  警告: 旧合约价格为0，无法计算百分比调整，使用1.0")
+            return 1.0, 0.0
+        
+        adjustment = new_price / old_price
+        # print(f"  调整因子计算: {new_price:.4f} / {old_price:.4f} = {adjustment:.6f}")
+        return adjustment, 0.0
     
-    @staticmethod
-    def _set_smart_date_ticks(ax, datetimes):
-        """智能设置日期刻度 - 避免AutoDateLocator警告"""
-        import matplotlib.dates as mdates
+    def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
+        if not rollover.is_valid:
+            return False, ValidityStatus.INSUFFICIENT_DATA
+        if self.use_window:
+            old_price, new_price = calculate_settlement(
+                rollover,
+                self.old_price_field,
+                self.new_price_field,
+                self.window_size,
+                self.new_price_old_data_bool
+            )
+        else:
+            old_price = rollover.old_contract_old_data[self.old_price_field].iloc[-1]
+            if self.new_price_old_data_bool:
+                new_price = rollover.new_contract_old_data[self.new_price_field].iloc[-1]
+            else:
+                new_price = rollover.new_contract_new_data[self.new_price_field].iloc[0]
         
-        if len(datetimes) == 0:
-            return
+        if old_price == 0:
+            print(f"  无效原因: 旧合约价格为0")
+            return False, ValidityStatus.INVALID_ZERO_DIVISION
         
-        # 计算时间范围
-        time_range = datetimes.max() - datetimes.min()
-        days = time_range.days
-        hours = time_range.total_seconds() / 3600
+        # 检查负价格
+        if old_price < 0 or new_price < 0:
+            print(f"  无效原因: 存在负价格")
+            return False, ValidityStatus.NEGATIVE_PRICES
         
-        # 根据时间范围选择合适的刻度间隔
-        if days > 365 * 2:  # 超过2年
-            locator = mdates.YearLocator(1)
-            formatter = mdates.DateFormatter('%Y')
-        elif days > 180:  # 超过6个月
-            locator = mdates.MonthLocator(interval=3)
-            formatter = mdates.DateFormatter('%Y-%m')
-        elif days > 60:  # 超过2个月
-            locator = mdates.MonthLocator(interval=1)
-            formatter = mdates.DateFormatter('%Y-%m')
-        elif days > 14:  # 超过2周
-            locator = mdates.WeekdayLocator(byweekday=mdates.MO.weekday, interval=1)
-            formatter = mdates.DateFormatter('%m-%d')
-        elif days > 2:  # 超过2天
-            locator = mdates.DayLocator(interval=1)
-            formatter = mdates.DateFormatter('%m-%d')
-        elif hours > 12:  # 超过12小时
-            locator = mdates.HourLocator(interval=6)
-            formatter = mdates.DateFormatter('%H:%M')
-        elif hours > 6:  # 超过6小时
-            locator = mdates.HourLocator(interval=2)
-            formatter = mdates.DateFormatter('%H:%M')
-        elif hours > 2:  # 超过2小时
-            locator = mdates.HourLocator(interval=1)
-            formatter = mdates.DateFormatter('%H:%M')
-        else:  # 短时间范围
-            locator = mdates.MinuteLocator(interval=30)
-            formatter = mdates.DateFormatter('%H:%M')
-        
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(formatter)
-        
-        # 自动调整日期标签格式
-        fig = ax.get_figure()
-        if fig:
-            fig.autofmt_xdate()
-
-# class FuturesRolloverDetector_MainTick(FuturesProcessorBase):
-#     """基于main_tick数据表的合约切换点检测器"""
-
-#     @property
-#     def EXPECTED_TABLE_NAMES(self) -> List[str]:
-#         return ['main_tick']
+        # print(f"  策略有效")
+        return True, ValidityStatus.VALID
     
-#     @property
-#     def EXPECTED_COLUMNS(self) -> Dict[str, List[str]]:
-#         return {
-#             'main_tick': ['datetime', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'position']
-#         }
+    def get_name(self) -> str:
+        return self.name
 
-#     @property
-#     def REQUIRED_COLUMNS(self) -> Dict[str, List[str]]:
-#         return {
-#             'main_tick': ['datetime', 'symbol', 'close']
-#         }
+class SpreadAdjustmentStrategy(AdjustmentStrategy):
+    """价差复权策略"""
     
-#     def detect_rollover_points(self) -> List[ContractRollover]:
-#         """
-#         基于main_tick数据表的切换点检测方法
+    def __init__(self, use_window: bool = True, window_size: int = 120,
+                 old_price_field: str = 'close', new_price_field: str = 'close',
+                 new_price_old_data_bool: bool = True, description: Optional[str] = None,
+                 adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
+        super().__init__(adjustment_direction=adjustment_direction)
+        self.adjustment_operation = AdjustmentOperation.ADDITIVE
+        self.use_window = use_window
+        self.window_size = window_size
+        self.old_price_field = old_price_field
+        self.new_price_field = new_price_field
+        self.new_price_old_data_bool = new_price_old_data_bool
+        self.description = description
+        self.name = "spread_window" if self.use_window else "spread"
+    
+    def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
+        if self.use_window:
+            old_price, new_price = calculate_settlement(
+                rollover,
+                self.old_price_field,
+                self.new_price_field,
+                self.window_size,
+                self.new_price_old_data_bool
+            )
+        else:
+            old_price = rollover.old_contract_old_data[self.old_price_field].iloc[-1]
+            if self.new_price_old_data_bool:
+                new_price = rollover.new_contract_old_data[self.new_price_field].iloc[-1]
+            else:
+                new_price = rollover.new_contract_new_data[self.new_price_field].iloc[0]
+
+        gap = new_price - old_price
+        return 1.0, gap
+    
+    def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
+        # 价差复权几乎总是有效的，除非数据不足
+        if self.new_price_old_data_bool:
+            if len(rollover.old_contract_old_data) == 0 or len(rollover.new_contract_old_data) == 0:
+                return False, ValidityStatus.INSUFFICIENT_DATA
+        else:
+            if len(rollover.old_contract_old_data) == 0 or len(rollover.new_contract_new_data) == 0:
+                return False, ValidityStatus.INSUFFICIENT_DATA
+        return True, ValidityStatus.VALID
+    
+    def get_name(self) -> str:
+        return self.name
+
+class WeightedAverageStrategy(AdjustmentStrategy):
+    """加权平均复权策略 - 用于处理异常情况"""
+    
+    def __init__(self, weights_by_time: Optional[Dict[str, float]] = None,
+                 old_price_field: str = 'close', new_price_field: str = 'close',
+                 time_field: str = 'datetime', new_price_old_data_bool: bool = True,
+                 description: Optional[str] = None,
+                 adjustment_direction: AdjustmentDirection = AdjustmentDirection.ADJUST_OLD):
+        super().__init__(adjustment_direction=adjustment_direction)
+        self.weights_by_time = weights_by_time or {}
+        self.old_price_field = old_price_field
+        self.new_price_field = new_price_field
+        self.time_field = time_field
+        self.new_price_old_data_bool = new_price_old_data_bool
+        self.description = description
+        self.name = "weighted_average"
+    
+    def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
+        # 基于成交量加权的平均价格计算
+        old_avg = self._calculate_weighted_average(rollover.old_contract_old_data, price_field=self.old_price_field)
+        if self.new_price_old_data_bool:
+            new_avg = self._calculate_weighted_average(rollover.new_contract_old_data, price_field=self.new_price_field)
+        else:
+            new_avg = self._calculate_weighted_average(rollover.new_contract_new_data, price_field=self.new_price_field)
+
+        if old_avg == 0:
+            return 1.0, 0.0
         
-#         Args:
-#             data: 输入数据（用于检测symbol变化点）
+        adjustment = new_avg / old_avg
+        gap = new_avg - old_avg
+        
+        return adjustment, gap
+    
+    def _calculate_weighted_average(self, df: pd.DataFrame, price_field: str) -> float:
+        if df.empty:
+            return 0.0
+        
+        # 如果有成交量权重，使用加权平均
+        if self.weights_by_time:
+            total_weight = 0
+            weighted_sum = 0
+            for _, row in df.iterrows():
+                ts = row[self.time_field]
+                price = row[price_field]
+                weight = self.weights_by_time.get(ts, 1.0)
+                weighted_sum += price * weight
+                total_weight += weight
             
-#         Returns:
-#             检测到的切换点列表
-#         """
-            
-#         # 按时间排序
-#         data = self.get_mapped_table('main_tick').sort_values('datetime').reset_index(drop=True)
+            if total_weight > 0:
+                return weighted_sum / total_weight
         
-#         # 检测symbol变化点
-#         data['symbol_change'] = data['symbol'] != data['symbol'].shift(1)
-#         change_indices = data[data['symbol_change']].index.tolist()
-        
-#         # 移除第一个点（因为是数据开始）
-#         if change_indices and change_indices[0] == 0:
-#             change_indices = change_indices[1:]
-        
-#         print(f"检测到 {len(change_indices)} 个合约切换点")
-#         print(f"数据时间范围: {data['datetime'].min()} 到 {data['datetime'].max()}")
-        
-#         # 构建切换事件并进行验证
-#         rollover_points = []
-#         for idx in change_indices:
-#             try:
-#                 # 获取切换时间点
-#                 rollover_time = data.iloc[idx]['datetime']
-#                 old_contract = data.iloc[idx - 1]['symbol']
-#                 new_contract = data.iloc[idx]['symbol']
-                
-#                 print(f"\n处理切换点 {rollover_time}: {old_contract} -> {new_contract}")
-                
-#                 # 从main_tick数据中提取旧合约和新合约的数据
-#                 # 向上遍历旧合约数据直到symbol变化
-#                 old_contract_data = self._extract_contract_data(data, old_contract, rollover_time, is_old=True)
-#                 # 向下遍历新合约数据直到symbol变化
-#                 new_contract_data = self._extract_contract_data(data, new_contract, rollover_time, is_old=False)
-                
-#                 # 创建切换事件
-#                 rollover = ContractRollover(
-#                     rollover_datetime=rollover_time,
-#                     old_contract=old_contract,
-#                     new_contract=new_contract,
-#                     old_contract_old_data=old_contract_data,
-#                     old_contract_new_data=pd.DataFrame(),
-#                     new_contract_old_data=pd.DataFrame(),
-#                     new_contract_new_data=new_contract_data,
-#                 )
-                
-#                 rollover.is_valid = rollover.validate_data_tables(['old_contract_old_data', 'new_contract_new_data'])
-                
-#                 if rollover.is_valid:
-#                     rollover_points.append(rollover)
-#                 else:
-#                     # 直接报错
-#                     raise ValueError(f"切换点 {rollover.rollover_datetime} 无效")
-                    
-#             except Exception as e:
-#                 print(f"处理切换点 {idx} 时出错: {e}")
-#                 import traceback
-#                 traceback.print_exc()
-#                 continue
-        
-#         print(f"\n有效切换点: {len(rollover_points)}/{len(change_indices)}")
-        
-#         return rollover_points
-
-# class FuturesRolloverDetector_MainTick_MainCloseLast(FuturesProcessorBase):
-#     """使用main_tick和date_main_close_last两个表格的合约切换点检测器"""
+        # 否则使用简单平均
+        all_prices = [row[price_field] for _, row in df.iterrows()]
+        return sum(all_prices) / len(all_prices)
     
-#     @property
-#     def EXPECTED_TABLE_NAMES(self) -> List[str]:
-#         return ['main_tick', 'date_main_close_last']
+    def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
+        if self.new_price_old_data_bool:
+            if len(rollover.old_contract_old_data) == 0 or len(rollover.new_contract_old_data) == 0:
+                return False, ValidityStatus.INSUFFICIENT_DATA
+        else:
+            if len(rollover.old_contract_old_data) == 0 or len(rollover.new_contract_new_data) == 0:
+                return False, ValidityStatus.INSUFFICIENT_DATA
+        return True, ValidityStatus.VALID
     
-#     @property
-#     def EXPECTED_COLUMNS(self) -> Dict[str, List[str]]:
-#         return {
-#             'main_tick': ['datetime', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'position'],
-#             'date_main_close_last': ['datetime', 'symbol', 'close', 'last_close']
-#         }
+    def get_name(self) -> str:
+        return self.name
 
-#     @property
-#     def REQUIRED_COLUMNS(self) -> Dict[str, List[str]]:
-#         return {
-#             'main_tick': ['datetime', 'symbol', 'close'],
-#             'date_main_close_last': ['datetime', 'symbol', 'close']
-#         }
-
-#     def detect_rollover_points(self) -> List[ContractRollover]:
-#         """
-#         增强切换点检测方法，使用main_tick和date_main_close_last两个表格
-        
-#         Returns:
-#             检测到的切换点列表
-#         """
-#         # 验证必需的数据表是否可用
-#         main_tick_data = self.get_mapped_table('main_tick')
-#         date_main_close_last_data = self.get_mapped_table('date_main_close_last')
-        
-#         # 按时间排序
-#         main_tick_data = main_tick_data.sort_values('datetime').reset_index(drop=True)
-#         date_main_close_last_data = date_main_close_last_data.sort_values('datetime').reset_index(drop=True)
-
-        
-#         # 检测symbol变化点
-#         main_tick_data['symbol_change'] = main_tick_data['symbol'] != main_tick_data['symbol'].shift(1)
-#         change_indices = main_tick_data[main_tick_data['symbol_change']].index.tolist()
-        
-#         # 移除第一个点（因为是数据开始）
-#         if change_indices and change_indices[0] == 0:
-#             change_indices = change_indices[1:]
-        
-#         print(f"检测到 {len(change_indices)} 个合约切换点")
-#         print(f"数据时间范围: {main_tick_data['datetime'].min()} 到 {main_tick_data['datetime'].max()}")
-        
-#         # 构建切换事件并进行验证
-#         rollover_points = []
-#         for idx in change_indices:
-#             try:
-#                 # 获取切换时间点
-#                 rollover_time = main_tick_data.iloc[idx]['datetime']
-#                 old_contract = main_tick_data.iloc[idx - 1]['symbol']
-#                 new_contract = main_tick_data.iloc[idx]['symbol']
-                
-#                 print(f"\n处理切换点 {rollover_time}: {old_contract} -> {new_contract}")
-                
-#                 # 从main_tick数据中提取旧合约和新合约的数据
-#                 # 向上遍历旧合约数据直到symbol变化
-#                 old_contract_data = self._extract_contract_data(main_tick_data, old_contract, rollover_time, is_old=True)
-#                 # 向下遍历新合约数据直到symbol变化
-#                 new_contract_data = self._extract_contract_data(main_tick_data, new_contract, rollover_time, is_old=False)
-                
-#                 # 创建切换事件
-#                 rollover = ContractRollover(
-#                     rollover_datetime=rollover_time,
-#                     old_contract=old_contract,
-#                     new_contract=new_contract,
-#                     old_contract_old_data=old_contract_data,
-#                     old_contract_new_data=pd.DataFrame(),
-#                     new_contract_old_data=pd.DataFrame(),
-#                     new_contract_new_data=new_contract_data,
-#                 )
-
-#                 # Check rollover.new_contract_start_date is date not None
-#                 if rollover.new_contract_start_date is None:
-#                     raise ValueError(f"切换点 {rollover.rollover_datetime} 无效: 新合约 {rollover.new_contract} 的开始时间不能为None")
-
-#                 rollover.new_contract_old_data = self._extract_new_contract_old_data(date_main_close_last_data, new_contract, rollover.new_contract_start_date)
-
-#                 rollover.is_valid = rollover.validate_data_tables(['old_contract_old_data', 'new_contract_old_data', 'new_contract_new_data'])
-                
-#                 if rollover.is_valid:
-#                     rollover_points.append(rollover)
-#                 else:
-#                     # 直接报错
-#                     raise ValueError(f"切换点 {rollover.rollover_datetime} 无效")
-                    
-#             except Exception as e:
-#                 print(f"处理切换点 {idx} 时出错: {e}")
-#                 import traceback
-#                 traceback.print_exc()
-#                 continue
-        
-#         print(f"\n有效切换点: {len(rollover_points)}/{len(change_indices)}")
-        
-#         return rollover_points
+class ManualOverrideStrategy(AdjustmentStrategy):
+    """手动覆盖策略 - 允许用户手动指定调整参数"""
     
-#     def _extract_new_contract_old_data(self, date_data: pd.DataFrame, new_contract: str, 
-#                                      reference_date: date) -> pd.DataFrame:
-#         """
-#         从date_main_close_last数据中提取新合约的旧数据
-        
-#         Args:
-#             date_data: date_main_close_last数据
-#             new_contract: 新合约代码
-#             rollover_time: 切换时间点
-            
-#         Returns:
-#             新合约的旧数据（前一日数据）
-#         """
-        
-#         # 确保'datetime'列为pandas的datetime类型
-#         if not pd.api.types.is_datetime64_any_dtype(date_data['datetime']):
-#             date_data['datetime'] = pd.to_datetime(date_data['datetime'])
-        
-#         # 在date_main_close_last中查找对应日期和合约的数据
-#         filtered_data = date_data[
-#             (date_data['symbol'] == new_contract) & 
-#             (date_data['datetime'].dt.date == pd.to_datetime(reference_date).date())
-#         ]
-        
-#         if filtered_data.empty:
-#             print(f"  警告: 未找到 {new_contract} 在 {reference_date} 的数据")
-#             return pd.DataFrame()
-            
-#         print(f"  找到 {len(filtered_data)} 条 {new_contract} 在 {reference_date} 的数据")
-#         return filtered_data.copy().reset_index(drop=True)
+    def __init__(self, adjustment_factor: float = 1.0, price_gap: float = 0.0):
+        self.adjustment_factor = adjustment_factor
+        self.price_gap = price_gap
+    
+    def calculate_adjustment(self, rollover: 'ContractRollover') -> Tuple[float, float]:
+        return self.adjustment_factor, self.price_gap
+    
+    def is_valid(self, rollover: 'ContractRollover') -> Tuple[bool, ValidityStatus]:
+        return True, ValidityStatus.MANUALLY_OVERRIDDEN_VALID
+    
+    def get_name(self) -> str:
+        return "manual_override"

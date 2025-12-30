@@ -1,6 +1,15 @@
+"""
+ProductPeriodStrategySelector类用于根据品种（product）和时间段选择特定的复权策略（AdjustmentStrategy）。
+支持为每个品种配置多个不同时段的策略，策略以（起始时间，结束时间，策略名称，策略对象）为单位进行管理。
+当查询某一品种在特定时间点的策略时，优先返回命中特殊配置的策略，否则返回默认策略（default_strategy）。
+主要功能包括：
+- add_strategy：为指定品种和时间段添加或更新策略，自动处理时间段重叠和拆分。
+- get_strategy：获取指定品种和时间点的策略字典，未命中特殊配置时返回默认策略。
+- describe：返回当前所有品种的策略配置描述，便于调试和展示。
+
+"""
 from typing import Dict, List, Tuple, Any
 from datetime import datetime, timedelta
-# from .AdjustmentStrategy import AdjustmentStrategy  # Uncomment and adjust if AdjustmentStrategy is in another module
 
 class ProductPeriodStrategySelector:
     """
