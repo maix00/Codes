@@ -37,34 +37,34 @@ profiler = cProfile.Profile()
 profiler.enable()
 
 
-# Generate Time-Truncated (2025-10-01) Main Contract Series (run check_6.py first to generate truncated data)
-detector = DataBasics.FuturesProcessor()
-detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
-detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping_truncated.parquet'))
-detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk_truncated.parquet'))
-detector.rollover_points_cache_path = '../data/rollover_points_cache_truncated.pkl'
-detector.rollover_adjustments_cache_path = '../data/rollover_adjustments_truncated.csv'
-detector.calculate_adjustment(adjustment_direction=AdjustmentDirection.ADJUST_NEW, 
-                              adjustment_backward_datetime=pd.Timestamp('2010-01-01'))
-detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
-                                       save_path='../data/main_dayk_truncated/', save_per_product=True,
-                                       update_mode=True, issues_save_path='../data/main_dayk_issues_truncated.csv')
+# # Generate Time-Truncated (2025-10-01) Main Contract Series (run check_6.py first to generate truncated data)
+# detector = DataBasics.FuturesProcessor()
+# detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
+# detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping_truncated.parquet'))
+# detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk_truncated.parquet'))
+# detector.rollover_points_cache_path = '../data/rollover_points_cache_truncated.pkl'
+# detector.rollover_adjustments_cache_path = '../data/rollover_adjustments_truncated.csv'
+# detector.calculate_adjustment(adjustment_direction=AdjustmentDirection.ADJUST_NEW, 
+#                               adjustment_backward_datetime=pd.Timestamp('2010-01-01'))
+# detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
+#                                        save_path='../data/main_dayk_truncated/', save_per_product=True,
+#                                        update_mode=True, issues_save_path='../data/main_dayk_issues_truncated.csv')
 
-input("按回车键开始更新2025-10-01之后的数据...")
+# input("按回车键开始更新2025-10-01之后的数据...")
 
-# Update to-date Time-Truncated (2025-10-01) Main Contract Series (Backward Adjustment)
-detector = DataBasics.FuturesProcessor()
-detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
-detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping.parquet'))
-detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk.parquet'))
-detector.rollover_points_cache_path = '../data/rollover_points_cache_truncated.pkl'
-detector.rollover_adjustments_cache_path = '../data/rollover_adjustments_truncated.csv'
-# detector.product_id_list = ['A_S.DCE']
-detector.calculate_adjustment(adjustment_direction=AdjustmentDirection.ADJUST_NEW, 
-                              adjustment_backward_datetime=pd.Timestamp('2010-01-01'))
-detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
-                                       save_path='../data/main_dayk_truncated/', save_per_product=True,
-                                       update_mode=True, issues_save_path='../data/main_dayk_issues_updated.csv')
+# # Update to-date Time-Truncated (2025-10-01) Main Contract Series (Backward Adjustment)
+# detector = DataBasics.FuturesProcessor()
+# detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
+# detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping.parquet'))
+# detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk.parquet'))
+# detector.rollover_points_cache_path = '../data/rollover_points_cache_truncated.pkl'
+# detector.rollover_adjustments_cache_path = '../data/rollover_adjustments_truncated.csv'
+# # detector.product_id_list = ['A_S.DCE']
+# detector.calculate_adjustment(adjustment_direction=AdjustmentDirection.ADJUST_NEW, 
+#                               adjustment_backward_datetime=pd.Timestamp('2010-01-01'))
+# detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_bool=True,
+#                                        save_path='../data/main_dayk_truncated/', save_per_product=True,
+#                                        update_mode=True, issues_save_path='../data/main_dayk_issues_updated.csv')
 
 
 # # Generate to-date Main Contract Series (Backward Adjustment)
@@ -101,23 +101,23 @@ detector.generate_main_contract_series(source_data_label='dayk', add_adjust_col_
 # #                                                 plot_bool=True, plot_save_path='../data/main_dayk_adjusted_plots/')
 
 
-# # Generate to-date Main Contract Series (Minute Data, Forward Adjustment)
-# detector = DataBasics.FuturesProcessor()
-# detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
-# detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping.parquet'))
-# detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk.parquet'))
-# detector.rollover_points_cache_path = '../data/rollover_points_cache.pkl'
-# detector.rollover_adjustments_cache_path = '../data/rollover_adjustments.csv'
-# detector.generate_main_contract_series(source_data_label='mink', 
-#                                        source_data_folder_UID_path='../data/data_mink_product_2025/',
-#                                        add_adjust_col_bool=True, save_per_product=True,
-#                                        update_mode=True, save_path='../data/main_mink/',
-#                                        issues_save_path='../data/main_mink_issues.csv')
-# detector.generate_main_contract_series_adjusted(data=pd.read_parquet('../data/main_mink.parquet'),
-#                                                 save_path='../data/main_mink_adjusted.parquet',
-#                                                 report_bool=True, report_save_path='../data/main_mink_adjusted_report.csv',
-#                                                 plot_bool=True, plot_save_path='../data/main_mink_adjusted_plots/',
-#                                                 plot_start_date='2025-01-01', plot_end_date='2026-01-01',)
+# Generate to-date Main Contract Series (Minute Data, Forward Adjustment)
+detector = DataBasics.FuturesProcessor()
+detector.set_column_mapping('product_contract_start_end', {'S_INFO_WINDCODE': 'PRODUCT', 'FS_MAPPING_WINDCODE': 'CONTRACT'},)
+detector.add_data_table('product_contract_start_end', pd.read_parquet('../data/wind_mapping.parquet'))
+detector.add_data_table('contract_dayk', pd.read_parquet('../data/data_dayk.parquet'))
+detector.rollover_points_cache_path = '../data/rollover_points_cache.pkl'
+detector.rollover_adjustments_cache_path = '../data/rollover_adjustments.csv'
+detector.generate_main_contract_series(source_data_label='mink', 
+                                       source_data_folder_UID_path='../data/data_mink_product_2025/',
+                                       add_adjust_col_bool=True, save_per_product=True,
+                                       update_mode=True, save_path='../data/main_mink/',
+                                       issues_save_path='../data/main_mink_issues.csv')
+detector.generate_main_contract_series_adjusted(data=pd.read_parquet('../data/main_mink.parquet'),
+                                                save_path='../data/main_mink_adjusted.parquet',
+                                                report_bool=True, report_save_path='../data/main_mink_adjusted_report.csv',
+                                                plot_bool=True, plot_save_path='../data/main_mink_adjusted_plots/',
+                                                plot_start_date='2025-01-01', plot_end_date='2026-01-01',)
 
 
 profiler.disable()

@@ -61,6 +61,9 @@ class MultipleParquetFuturesDataProvider(PresetDataProvider):
                 data_array, start_date, end_date, available_fields = self._get_data(_path, tickers, fields, start_date, end_date,
                                                                                 frequency, field_to_price_field_dict,
                                                                                 index_col, dateformat, ticker_col)
+                if data_array is None:
+                    self.logger.warning(f"No data found for ticker {ticker.as_string()}. Skipping.")
+                    continue
                 normalized_data_array = normalize_data_array(data_array, tickers, available_fields, False, False, False)
                 normalize_data_array_dict[ticker.as_string()] = normalized_data_array
 
@@ -68,7 +71,15 @@ class MultipleParquetFuturesDataProvider(PresetDataProvider):
                     self.save_compressed(normalized_data_array, qf_cache_path, ticker_str=ticker.as_string())
                     self.logger.info(f"Cache for ticker {ticker.as_string()} saved.")
 
+        if not normalize_data_array_dict:
+            if save_cache_mode:
+                self.logger.warning("No data was loaded for any ticker. No cache files were created.")
+                return
+            else:
+                self.logger.error("No data was loaded for any ticker. Check the correctness of all data paths.")
         normalized_data_array = QFDataArray.concat(list(normalize_data_array_dict.values()), dim=TICKERS)
+        assert start_date is not None and end_date is not None and frequency is not None, \
+            "Data loading failed to provide start_date, end_date or frequency."
         super().__init__(data=normalized_data_array,
                          start_date=start_date,
                          end_date=end_date,
@@ -88,6 +99,8 @@ class MultipleParquetFuturesDataProvider(PresetDataProvider):
         else:
             assert filepath.endswith('.xz') if use_lzma else filepath.endswith('.gz')
         open_func = lzma.open if use_lzma else gzip.open
+        if not os.path.exists(os.path.dirname(filepath)):
+            os.makedirs(os.path.dirname(filepath))
         with open_func(filepath, 'wb') as f:
             assert isinstance(f, gzip.GzipFile) or isinstance(f, lzma.LZMAFile)
             pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -151,6 +164,8 @@ class MultipleParquetFuturesDataProvider(PresetDataProvider):
 
         if ticker_col:
             df = QFDataFrame(pd.read_parquet(path))#, dtype={index_col: str}))
+            if df.empty:
+                return None, None, None, None
             available_tickers = df[ticker_col].dropna().unique().tolist()
 
             for ticker_str in available_tickers:

@@ -6,7 +6,7 @@ from qf_lib.backtesting.order.execution_style import MarketOrder
 from qf_lib.backtesting.order.time_in_force import TimeInForce
 from qf_lib.backtesting.trading_session.backtest_trading_session import BacktestTradingSession
 
-from utilities import get_price_series
+from ICTester import get_price_series
 
 class SimpleMAStrategy(AbstractStrategy):
     """
@@ -27,7 +27,7 @@ class SimpleMAStrategy(AbstractStrategy):
         
         # Use data handler to download last 20 minutes close prices and use them to compute the moving averages
         long_ma_series = get_price_series(self.data_provider, self.ticker, PriceField.Close, self.long_ma_len, frequency=Frequency.MIN_1)
-        print(long_ma_series)
+        # print(long_ma_series)
         if long_ma_series is None:
             return  # Not enough data to compute the long MA yet
         
@@ -36,6 +36,37 @@ class SimpleMAStrategy(AbstractStrategy):
         short_ma_price = short_ma_series.mean()
 
         if short_ma_price >= long_ma_price:
+            # Place a buy Market Order, adjusting the position to a value equal to 100% of the portfolio
+            orders = self.order_factory.target_percent_orders({self.ticker: 1.0}, MarketOrder(), TimeInForce.DAY)
+        else:
+            orders = self.order_factory.target_percent_orders({self.ticker: 0.0}, MarketOrder(), TimeInForce.DAY)
+
+        # Cancel any open orders and place the newly created ones
+        self.broker.cancel_all_open_orders()
+        self.broker.place_orders(orders)
+
+class IntradayMomemtumStrategy(AbstractStrategy):
+    """
+    Strategy which computes intraday momentum based on close prices and creates a buy order in case if the momentum is positive.
+    """
+    def __init__(self, ts: BacktestTradingSession, ticker: Ticker, lookback_period: int = 10):
+        super().__init__(ts)
+        self.broker = ts.broker
+        self.order_factory = ts.order_factory
+        self.data_provider = ts.data_provider
+        self.ticker = ticker
+        self.lookback_period = lookback_period
+
+    def calculate_and_place_orders(self):
+        
+        # Use data handler to download last 'lookback_period' close prices and use them to compute the momentum
+        price_series = get_price_series(self.data_provider, self.ticker, PriceField.Close, self.lookback_period, frequency=Frequency.MIN_1)
+        if price_series is None:
+            return  # Not enough data to compute the momentum yet
+        
+        momentum = price_series.iloc[-1] - price_series.iloc[0]
+
+        if momentum > 0:
             # Place a buy Market Order, adjusting the position to a value equal to 100% of the portfolio
             orders = self.order_factory.target_percent_orders({self.ticker: 1.0}, MarketOrder(), TimeInForce.DAY)
         else:
