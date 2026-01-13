@@ -48,7 +48,9 @@ if __name__ == '__main__':
         for f in os.listdir(parquet_dir)
         if f.endswith('.parquet') and '_S' not in f and '-S' not in f
     ]
-    tester = ICTester(file_list, end_date='2025-05-31', futures_flag=True, futures_adjust_col=['close_price'])
+    tester = ICTester(file_list, #start_date='2025-01-01', 
+                      end_date='2025-05-30', 
+                      futures_flag=True, futures_adjust_col=['close_price'])
 
     # Calculate inflection point factor for all contracts
     inflection_factor = tester.calc_factor(lambda df: inflection_point_factor(df, price_col='close_price_adjusted'))
@@ -58,17 +60,13 @@ if __name__ == '__main__':
     # print(ic_series.head())
     # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
     #     print(ic_series)
-    print('inflection_factor\n', stats)
-    groups = tester.group_five_classes(inflection_factor)
-    # Get the earliest five dates from the 'top' group
-    earliest_dates = sorted(groups['top'].keys())[:5]
-    for date in earliest_dates:
-        # print(date, groups['top'][date])
-        pass
+    print('inflection_factor\n', stats.T)
+    groups, open_returns_groups = tester.group_classes(inflection_factor, plot_flag=True, n_groups=5, end_date='2025-12-31', start_date='2025-01-01')
+    # # Get the earliest five dates from the 'top' group
+    # earliest_dates = sorted(groups['group_1'].keys())[:5]
+    # for date in earliest_dates:
+    #     print(date, groups['group_1'][date])
+    #     print(date, open_returns_groups['group_1'][date])
+    #     pass
 
-    backtester = PortfolioBackTester(start_date='2020-01-01', end_date='2025-05-31',
-                                    initial_capital=1000000, risk_free_rate=0.02,
-                                    transaction_cost=0.01, margin_rate=0.5,
-                                    weight_type='equal', holdings_history={'LONG': groups['top']})
-    print(backtester.portfolio_history)
     

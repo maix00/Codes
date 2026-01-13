@@ -1,13 +1,11 @@
 import pandas as pd
 import numpy as np
-from typing import Callable, List, Dict, Optional
+from typing import Callable, List, Dict, Optional, Tuple
 import os
 from BackTester import Futures, FuturesContract, ProductBase
 
-mappings_path = '../data/wind_mapping.parquet'
-
 class ICTester:
-    def __init__(self, file_paths: List[str], end_date: Optional[str] = None,
+    def __init__(self, file_paths: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None,
                  futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None):
         """
         file_paths: list of parquet file paths, each containing a time series for a future contract.
@@ -21,6 +19,7 @@ class ICTester:
             contract = path.split('/')[-1].replace('.parquet', '')
             self.data[contract] = df.set_index('trade_time')
         self.contracts = list(self.data.keys())
+        self.start_date = start_date
         self.end_date = end_date
         self.futures_flag = futures_flag
         self.futures_adjust_col = futures_adjust_col
@@ -46,6 +45,17 @@ class ICTester:
             assert price_col in df.columns, f"{price_col} not in DataFrame columns for contract {c}"
             returns[c] = df[price_col].pct_change(periods=interval)
         return pd.DataFrame(returns)
+    
+    def calc_daily_return(self, price_col: str = 'open_price') -> pd.DataFrame:
+        """
+        Calculate daily returns for each contract.
+        price_col: column name for price
+        Returns: DataFrame, index: datetime, columns: contracts
+        """
+        daily_returns = {}
+        for c, df in self.data.items():
+            daily_returns[c] = daily_return(df, price_col=price_col)
+        return pd.DataFrame(daily_returns)
 
     def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series]) -> pd.DataFrame:
         """
@@ -64,7 +74,8 @@ class ICTester:
         """
         return df.rank(axis=1, method='average', na_option='keep', pct=True)
 
-    def calc_ic(self, factor_df: pd.DataFrame, return_df: pd.DataFrame, end_date: Optional[str] = None) -> tuple[pd.Series, pd.DataFrame]:
+    def calc_ic(self, factor_df: pd.DataFrame, return_df: pd.DataFrame, 
+                start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.Series, pd.DataFrame]:
         """
         Calculate IC (Spearman correlation) between factor and future returns for each datetime.
         All calculations stop before end_date (inclusive).
@@ -74,7 +85,10 @@ class ICTester:
         factor_rank = self.calc_rank(factor_df)
         return_rank = self.calc_rank(return_df)
         dt_index = factor_rank.index.intersection(return_rank.index)
+        start_date = start_date if start_date is not None else self.start_date
         end_date = end_date if end_date is not None else self.end_date
+        if start_date is not None:
+            dt_index = dt_index[dt_index >= start_date]
         if end_date is not None:
             dt_index = dt_index[dt_index <= end_date]
         ic = []
@@ -115,12 +129,18 @@ class ICTester:
         })
         return stats_df
 
-    def group_five_classes(self, factor_df: pd.DataFrame) -> Dict[str, Dict[str, List[ProductBase]]]:
+    def group_classes(self, factor_df: pd.DataFrame, n_groups: int = 5, plot_flag: bool = False, 
+                      start_date: Optional[str] = None, end_date: Optional[str] = None) -> Tuple[Dict[str, Dict[str, List[ProductBase]]], Dict[str, Dict[str, float]]]:
         """
-        For each datetime, split contracts into five groups: 'top', '1', '2', '3', 'bottom'.
+        For each datetime, split contracts into n_groups groups.
         Each group is a dict: {datetime_str: [contract names]}.
+        n_groups: number of groups to split into (default: 5)
         """
-        groups = {'top': {}, '1': {}, '2': {}, '3': {}, 'bottom': {}}
+        open_returns = self.calc_daily_return(price_col='open_price')
+
+        group_names = ['group_' + str(i) for i in range(n_groups)]
+        groups = {name: {} for name in group_names}
+        open_returns_groups = {name: {} for name in group_names}
         for dt, row in factor_df.iterrows():
             dt_str = str(dt)
             sorted_contracts = row.dropna().sort_values(ascending=False)
@@ -128,46 +148,59 @@ class ICTester:
             idx = list(sorted_contracts.index)
             idx = [ProductBase(name) for name in idx]
             if self.futures_flag:
-                idx = [Futures(product.name, mappings_path=mappings_path) for product in idx]
-            if n == 0:
-                for k in groups:
-                    groups[k][dt_str] = []
-            elif n == 1:
-                groups['top'][dt_str] = [idx[0]]
-                groups['1'][dt_str] = []
-                groups['2'][dt_str] = []
-                groups['3'][dt_str] = []
-                groups['bottom'][dt_str] = []
-            elif n == 2:
-                groups['top'][dt_str] = [idx[0]]
-                groups['1'][dt_str] = []
-                groups['2'][dt_str] = []
-                groups['3'][dt_str] = []
-                groups['bottom'][dt_str] = [idx[1]]
-            elif n == 3:
-                groups['top'][dt_str] = [idx[0]]
-                groups['1'][dt_str] = [idx[1]]
-                groups['2'][dt_str] = []
-                groups['3'][dt_str] = []
-                groups['bottom'][dt_str] = [idx[2]]
-            elif n == 4:
-                groups['top'][dt_str] = [idx[0]]
-                groups['1'][dt_str] = [idx[1]]
-                groups['2'][dt_str] = [idx[2]]
-                groups['3'][dt_str] = []
-                groups['bottom'][dt_str] = [idx[3]]
-            else:
-                # n >= 5, split as evenly as possible
-                # Convert to numpy array to ensure compatibility with array_split
+                idx = [Futures(product.name) for product in idx]
+            
+            # Split contracts into n_groups groups
+            if n > 0:
                 idx_array = np.asarray(idx)
-                split = np.array_split(idx_array, 5)
-                groups['top'][dt_str] = list(split[0])
-                groups['1'][dt_str] = list(split[1])
-                groups['2'][dt_str] = list(split[2])
-                groups['3'][dt_str] = list(split[3])
-                groups['bottom'][dt_str] = list(split[4])
-        return groups
+                split = np.array_split(idx_array, min(n, n_groups))
+                
+                # Fill groups from bottom to top (ascending order of factor values)
+                for i, group_contracts in enumerate(split):
+                    group_idx = n_groups - 1 - i  # Reverse order: bottom group first
+                    groups[group_names[group_idx]][dt_str] = list(group_contracts)
+                    contract_names = [product.name for product in group_contracts]
+                    open_returns_groups[group_names[group_idx]][dt_str] = np.mean(np.asarray(open_returns.loc[dt_str][contract_names].values, dtype=float))
+            
+            # Fill remaining groups (if n < n_groups) with empty lists
+            for i in range(min(n, n_groups), n_groups):
+                groups[group_names[i]][dt_str] = []
+                open_returns_groups[group_names[i]][dt_str] = np.nan
 
+        if plot_flag:
+            import matplotlib.pyplot as plt
+            # Plot average open returns per group over time
+            plt.figure(figsize=(12, 6))
+            start_date = start_date if start_date is not None else self.start_date
+            end_date = end_date if end_date is not None else self.end_date
+            print(start_date, end_date)
+            dates = []  # Initialize dates as an empty list
+            for name in group_names:
+                dates = list(open_returns_groups[name].keys()) if open_returns_groups[name] else []
+                dates = [date for date in dates if start_date <= date] if start_date else dates
+                dates = [date for date in dates if date <= end_date] if end_date else dates
+                returns = [open_returns_groups[name][date] for date in dates]
+                cumulative_returns = []
+                prev_value = 10000
+                for ret in returns:
+                    if not np.isnan(ret):
+                        prev_value = prev_value * (1 + ret)
+                    cumulative_returns.append(prev_value)
+                plt.plot(dates, cumulative_returns, label=name)
+            plt.xlabel('Date')
+            plt.ylabel('Average Next Day Open Return')
+            plt.title('Average Next Day Open Return by Factor Groups')
+            plt.legend()
+            # Only show every nth tick to reduce crowding
+            n_ticks = 10
+            assert len(dates) > 0, "No dates available for plotting."
+            tick_indices = np.linspace(0, len(dates) - 1, min(n_ticks, len(dates)), dtype=int)
+            plt.xticks(ticks=[dates[i] for i in tick_indices], rotation=45)
+            plt.tight_layout()
+            plt.show()
+
+        return groups, open_returns_groups
+    
 # Example usage:
 if __name__ == '__main__':
     parquet_dir = '../data/main_mink/'
@@ -193,6 +226,20 @@ def log_daily_return(df, price_col='close_price'):
         raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
     daily_close = df.groupby('trading_day')[price_col].last()
     return np.log(daily_close).diff()
+
+def daily_return(df, price_col: str = 'close_price'):
+    if 'trading_day' not in df.columns:
+        raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
+    if price_col == 'close_price':
+        daily_close = df.groupby('trading_day')[price_col].last()
+        # Calculate daily return as today's close price change
+        return daily_close.pct_change()
+    elif price_col == 'open_price':
+        daily_open = df.groupby('trading_day')[price_col].first()
+        # Calculate daily return as next day's open price change
+        return daily_open.pct_change().shift(-1)
+    else:
+        raise ValueError("Invalid price_col argument. Must be 'close_price' or 'open_price'.")
 
 # def intraday_momentum_reversal_factor(df: pd.DataFrame, price_col: str = 'close_price') -> pd.Series:
 #     """
