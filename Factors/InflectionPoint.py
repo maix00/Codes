@@ -4,7 +4,7 @@ from typing import Callable
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from ICTester import ICTester, log_daily_return
+from ICTester import ICTester, log_daily_return, integrated_ic_test_daily
 from BackTester import Futures, PortfolioBackTester
 
 def count_inflection_points(price_series: pd.Series) -> pd.Series:
@@ -42,31 +42,5 @@ def inflection_point_factor(df: pd.DataFrame, price_col: str = 'close_price_adju
     return factor
 
 if __name__ == '__main__':
-    parquet_dir = '../data/main_mink/'
-    file_list = [
-        os.path.join(parquet_dir, f)
-        for f in os.listdir(parquet_dir)
-        if f.endswith('.parquet') and '_S' not in f and '-S' not in f
-    ]
-    tester = ICTester(file_list, #start_date='2025-01-01', 
-                      end_date='2025-05-30', 
-                      futures_flag=True, futures_adjust_col=['close_price'])
-
-    # Calculate inflection point factor for all contracts
-    inflection_factor = tester.calc_factor(lambda df: inflection_point_factor(df, price_col='close_price_adjusted'))
-    daily_returns = tester.calc_factor(lambda df: log_daily_return(df, price_col='close_price_adjusted'))
-
-    ic_series, stats = tester.calc_ic(inflection_factor, daily_returns)
-    # print(ic_series.head())
-    # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-    #     print(ic_series)
-    print('inflection_factor\n', stats.T)
-    groups, open_returns_groups = tester.group_classes(inflection_factor, plot_flag=True, n_groups=5, end_date='2025-12-31', start_date='2025-01-01')
-    # # Get the earliest five dates from the 'top' group
-    # earliest_dates = sorted(groups['group_1'].keys())[:5]
-    # for date in earliest_dates:
-    #     print(date, groups['group_1'][date])
-    #     print(date, open_returns_groups['group_1'][date])
-    #     pass
-
+    integrated_ic_test_daily(inflection_point_factor)
     

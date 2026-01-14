@@ -241,37 +241,27 @@ def daily_return(df, price_col: str = 'close_price'):
     else:
         raise ValueError("Invalid price_col argument. Must be 'close_price' or 'open_price'.")
 
-# def intraday_momentum_reversal_factor(df: pd.DataFrame, price_col: str = 'close_price') -> pd.Series:
-#     """
-#     Calculate intraday momentum reversal factor for each trading day.
-#     intraday_momentum = (extrema_first - extrema_behind) / extrema_first
-#     Where extrema_first: first local extremum (min or max) in the day,
-#           extrema_behind: second local extremum in the day.
-#     Returns a Series indexed by trading_day.
-#     """
-#     if 'trading_day' not in df.columns:
-#         raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
-#     result = {}
-#     for day, day_df in df.groupby('trading_day'):
-#         price = day_df[price_col]
-#         # Find local extrema: points where price changes direction
-#         direction = pd.Series(np.sign(price.diff()), index=price.index)
-#         inflection = (direction != direction.shift(1)) & (direction != 0) & (direction.shift(1) != 0)
-#         extrema_idx = price.index[inflection]
-#         if len(extrema_idx) >= 2:
-#             first_extrema = price.loc[extrema_idx[0]]
-#             second_extrema = price.loc[extrema_idx[1]]
-#             if first_extrema != 0:
-#                 result[day] = (first_extrema - second_extrema) / first_extrema
-#             else:
-#                 result[day] = np.nan
-#         else:
-#             result[day] = np.nan
-#     return pd.Series(result)
+def integrated_ic_test_daily(factor_func: Callable):
+    parquet_dir = '../data/main_mink/'
+    file_list = [
+        os.path.join(parquet_dir, f)
+        for f in os.listdir(parquet_dir)
+        if f.endswith('.parquet') and '_S' not in f and '-S' not in f
+    ]
+    tester = ICTester(file_list, #start_date='2025-01-01', 
+                      end_date='2025-05-30', 
+                      futures_flag=True, futures_adjust_col=['close_price'])
 
-# # 计算日内动量反转因子
-# intraday_momentum_factor = tester.calc_factor(lambda df: intraday_momentum_reversal_factor(df, price_col='close_price'))
+    # Calculate inflection point factor for all contracts
+    factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'))
+    daily_returns = tester.calc_factor(lambda df: log_daily_return(df, price_col='close_price_adjusted'))
 
-# # 计算IC
-# ic_series, stats = tester.calc_ic(intraday_momentum_factor, daily_returns)
-# print('intraday_momentum_reversal_factor\n', stats)
+    ic_series, stats = tester.calc_ic(factor_series, daily_returns)
+    print(factor_func.__name__, 'IC Stats:\n', stats.T)
+    groups, open_returns_groups = tester.group_classes(factor_series, plot_flag=True, n_groups=5, end_date='2025-12-31', start_date='2025-01-01')
+    # Get the earliest five dates from the 'top' group
+    earliest_dates = sorted(groups['group_0'].keys())[:5]
+    for date in earliest_dates:
+        print(date, groups['group_0'][date])
+        print(date, open_returns_groups['group_0'][date])
+        pass
