@@ -130,15 +130,22 @@ class ICTester:
         return stats_df
 
     def group_classes(self, factor_df: pd.DataFrame, n_groups: int = 5, plot_flag: bool = False, 
-                      start_date: Optional[str] = None, end_date: Optional[str] = None) -> Tuple[Dict[str, Dict[str, List[ProductBase]]], Dict[str, Dict[str, float]]]:
+                      start_date: Optional[str] = None, end_date: Optional[str] = None,
+                      plot_n_group_list: Optional[List[int]] = None) -> Tuple[Dict[str, Dict[str, List[ProductBase]]], Dict[str, Dict[str, float]]]:
         """
         For each datetime, split contracts into n_groups groups.
         Each group is a dict: {datetime_str: [contract names]}.
         n_groups: number of groups to split into (default: 5)
         """
-        open_returns = self.calc_daily_return(price_col='open_price')
+        # Calculate daily returns at next open
+        assert 'open_price_adjusted' in next(iter(self.data.values())).columns, "DataFrames must contain 'open_price_adjusted' column."
+        open_returns = self.calc_daily_return(price_col='open_price_adjusted')
+
+        # Plot adjustment for group numbers
+        plot_n_group_list = [n_groups + n_group if n_group < 0 else n_group for n_group in plot_n_group_list] if plot_n_group_list else None
 
         group_names = ['group_' + str(i) for i in range(n_groups)]
+        group_names = group_names[::-1]
         groups = {name: {} for name in group_names}
         open_returns_groups = {name: {} for name in group_names}
         for dt, row in factor_df.iterrows():
@@ -176,6 +183,8 @@ class ICTester:
             print(start_date, end_date)
             dates = []  # Initialize dates as an empty list
             for name in group_names:
+                if plot_n_group_list is not None and name.split('_')[-1] not in [str(n) for n in plot_n_group_list]:
+                    continue
                 dates = list(open_returns_groups[name].keys()) if open_returns_groups[name] else []
                 dates = [date for date in dates if start_date <= date] if start_date else dates
                 dates = [date for date in dates if date <= end_date] if end_date else dates
@@ -230,18 +239,18 @@ def log_daily_return(df, price_col='close_price'):
 def daily_return(df, price_col: str = 'close_price'):
     if 'trading_day' not in df.columns:
         raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
-    if price_col == 'close_price':
+    if price_col.startswith('close_price'):
         daily_close = df.groupby('trading_day')[price_col].last()
         # Calculate daily return as today's close price change
         return daily_close.pct_change()
-    elif price_col == 'open_price':
+    elif price_col.startswith('open_price'):
         daily_open = df.groupby('trading_day')[price_col].first()
         # Calculate daily return as next day's open price change
         return daily_open.pct_change().shift(-1)
     else:
         raise ValueError("Invalid price_col argument. Must be 'close_price' or 'open_price'.")
 
-def integrated_ic_test_daily(factor_func: Callable):
+def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
     parquet_dir = '../data/main_mink/'
     file_list = [
         os.path.join(parquet_dir, f)
@@ -250,15 +259,20 @@ def integrated_ic_test_daily(factor_func: Callable):
     ]
     tester = ICTester(file_list, #start_date='2025-01-01', 
                       end_date='2025-05-30', 
-                      futures_flag=True, futures_adjust_col=['close_price'])
+                      futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
 
     # Calculate inflection point factor for all contracts
     factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'))
-    daily_returns = tester.calc_factor(lambda df: log_daily_return(df, price_col='close_price_adjusted'))
+    daily_returns = tester.calc_factor(lambda df: log_daily_return(df, price_col='open_price_adjusted'))
 
     ic_series, stats = tester.calc_ic(factor_series, daily_returns)
     print(factor_func.__name__, 'IC Stats:\n', stats.T)
-    groups, open_returns_groups = tester.group_classes(factor_series, plot_flag=True, n_groups=5, end_date='2025-12-31', start_date='2025-01-01')
+    groups, open_returns_groups = tester.group_classes(factor_series, 
+                                                       plot_flag=True, 
+                                                       n_groups=n_groups, 
+                                                       plot_n_group_list=plot_n_group_list,
+                                                       end_date='2025-12-31', 
+                                                       start_date='2025-01-01')
     # Get the earliest five dates from the 'top' group
     earliest_dates = sorted(groups['group_0'].keys())[:5]
     for date in earliest_dates:
