@@ -174,6 +174,33 @@ class ICTester:
                 groups[group_names[i]][dt_str] = []
                 open_returns_groups[group_names[i]][dt_str] = np.nan
 
+        report_groups = {}
+        for name in group_names:
+            dates = list(open_returns_groups[name].keys()) if open_returns_groups[name] else []
+            dates = [date for date in dates if start_date <= date] if start_date else dates
+            dates = [date for date in dates if date <= end_date] if end_date else dates
+            returns = [open_returns_groups[name][date] for date in dates]
+            returns_series = pd.Series(returns).dropna()
+            cumulative_returns = (1 + returns_series).cumprod()
+            metrics = {
+            'Total Return': (cumulative_returns.iloc[-1] - 1) * 100 if len(cumulative_returns) > 0 else 0,
+            'Annual Return': ((cumulative_returns.iloc[-1]) ** (252 / len(cumulative_returns)) - 1) * 100 if len(cumulative_returns) > 1 else 0,
+            'Volatility': pd.Series(returns).std() * np.sqrt(252) * 100,
+            'Sharpe Ratio': (pd.Series(returns).mean() * 252) / (pd.Series(returns).std() * np.sqrt(252)) if pd.Series(returns).std() != 0 else 0,
+            'Max Drawdown': ((cumulative_returns.cummax() - cumulative_returns) / cumulative_returns.cummax()).max() * 100 if len(cumulative_returns) > 0 else 0,
+            'Calmar Ratio': ((cumulative_returns.iloc[-1] ** (252 / len(cumulative_returns)) - 1) * 100) / (((cumulative_returns.cummax() - cumulative_returns) / cumulative_returns.cummax()).max() * 100) if ((cumulative_returns.cummax() - cumulative_returns) / cumulative_returns.cummax()).max() != 0 else 0,
+            'Win Rate': (pd.Series(returns) > 0).sum() / len(pd.Series(returns)) * 100 if len(pd.Series(returns)) > 0 else 0,
+            'Mean Return': pd.Series(returns).mean() * 100,
+            'Skewness': pd.Series(returns).skew(),
+            'Kurtosis': pd.Series(returns).kurtosis(),
+            }
+            name = int(name.split('_')[-1])
+            report_groups[name] = pd.Series(metrics)
+        
+        report_df = pd.DataFrame(report_groups).T.sort_index()  # Convert to DataFrame, transpose, and sort by name
+        with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+            print("Group Performance Summary:\n", report_df)
+
         if plot_flag:
             import matplotlib.pyplot as plt
             # Plot average open returns per group over time
@@ -273,9 +300,9 @@ def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_gr
                                                        plot_n_group_list=plot_n_group_list,
                                                        end_date='2025-12-31', 
                                                        start_date='2025-01-01')
-    # Get the earliest five dates from the 'top' group
-    earliest_dates = sorted(groups['group_0'].keys())[:5]
-    for date in earliest_dates:
-        print(date, groups['group_0'][date])
-        print(date, open_returns_groups['group_0'][date])
-        pass
+    # # Get the earliest five dates from the 'top' group
+    # earliest_dates = sorted(groups['group_0'].keys())[:5]
+    # for date in earliest_dates:
+    #     print(date, groups['group_0'][date])
+    #     print(date, open_returns_groups['group_0'][date])
+    #     pass
