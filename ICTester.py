@@ -1,8 +1,10 @@
+from enum import Enum
 import pandas as pd
 import numpy as np
 from typing import Callable, List, Dict, Optional, Tuple
 import os
 from BackTester import Futures, FuturesContract, ProductBase
+from collections import Counter
 
 class ICTester:
     def __init__(self, file_paths: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None,
@@ -32,6 +34,7 @@ class ICTester:
                     assert 'adjustment_add' in df.columns
                     for col, col_adj in zip(self.futures_adjust_col, self.futures_adjust_col_adjusted):
                         df[col_adj] = df[col] * df['adjustment_mul'] + df['adjustment_add']
+        self.factor_frequency: Optional[pd.Timedelta] = None
 
     def calc_returns(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
         """
@@ -48,24 +51,52 @@ class ICTester:
     
     def calc_daily_return(self, price_col: str = 'open_price') -> pd.DataFrame:
         """
-        Calculate daily returns for each contract.
-        price_col: column name for price
-        Returns: DataFrame, index: datetime, columns: contracts
+        计算每个合约的每日收益率。
+        price_col: 价格列名
+        Returns: DataFrame，索引为datetime，列为合约名称
         """
         daily_returns = {}
         for c, df in self.data.items():
             daily_returns[c] = daily_return(df, price_col=price_col)
         return pd.DataFrame(daily_returns)
 
-    def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series]) -> pd.DataFrame:
+    def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series], 
+                    frequency: Optional[pd.Timedelta] = None) -> pd.DataFrame:
         """
-        Apply a factor function to each contract's DataFrame.
-        factor_func: function that takes a DataFrame and returns a Series (indexed by datetime)
-        Returns: DataFrame, index: datetime, columns: contracts
+        将因子函数应用于每个合约的DataFrame。
+        
+        参数:
+            factor_func: 接收DataFrame并返回Series（以datetime为索引）的函数
+            frequency: 因子频率，FactorFrequency枚举值
+        
+        返回:
+            DataFrame: 索引为datetime，列为合约名称
         """
+
+        # 计算因子
         factors = {}
         for c, df in self.data.items():
             factors[c] = factor_func(df)
+
+        # 如果因子频率未指定，则尝试从数据中获取
+        if factors and frequency is None:
+            all_freqs = []
+            for freq_series in factors.values():
+                if len(freq_series) > 0:
+                    if len(freq_series.index) > 1:
+                        time_diffs = pd.to_datetime(freq_series.index).copy().to_series().diff().dropna()
+                        if len(time_diffs) > 0:
+                            min_diff = time_diffs.min()
+                            all_freqs.append(min_diff)
+            if all_freqs:
+                freq_counter = Counter(all_freqs)
+                most_common_freq = freq_counter.most_common(1)[0][0]
+                self.factor_frequency = most_common_freq
+            else:
+                self.factor_frequency = None
+        else:
+            self.factor_frequency = frequency
+        
         return pd.DataFrame(factors)
 
     def calc_rank(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -148,6 +179,7 @@ class ICTester:
         group_names = group_names[::-1]
         groups = {name: {} for name in group_names}
         open_returns_groups = {name: {} for name in group_names}
+        
         for dt, row in factor_df.iterrows():
             dt_str = str(dt)
             sorted_contracts = row.dropna().sort_values(ascending=False)
