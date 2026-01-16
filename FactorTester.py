@@ -6,7 +6,7 @@ import os
 from BackTester import Futures, FuturesContract, ProductBase
 from collections import Counter
 
-class ICTester:
+class FactorTester:
     def __init__(self, file_paths: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None,
                  futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None):
         """
@@ -278,7 +278,7 @@ if __name__ == '__main__':
         for f in os.listdir(parquet_dir)
         if f.endswith('.parquet') and '_S' not in f and '-S' not in f
     ]
-    tester = ICTester(file_list, end_date='2025-05-31', futures_flag=True, futures_adjust_col=['close_price'])
+    tester = FactorTester(file_list, end_date='2025-05-31', futures_flag=True, futures_adjust_col=['close_price'])
     returns = tester.calc_returns(interval=1)
     factor = tester.calc_factor(lambda df: df['close_price_adjusted'].rolling(5).mean())
     print(factor)
@@ -317,7 +317,7 @@ def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_gr
         for f in os.listdir(parquet_dir)
         if f.endswith('.parquet') and '_S' not in f and '-S' not in f
     ]
-    tester = ICTester(file_list, #start_date='2025-01-01', 
+    tester = FactorTester(file_list, #start_date='2025-01-01', 
                       end_date='2025-05-30', 
                       futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
 

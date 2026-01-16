@@ -4,7 +4,7 @@ from typing import Callable
 import os
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from ICTester import ICTester, log_daily_return, integrated_ic_test_daily
+from FactorTester import FactorTester, log_daily_return, integrated_ic_test_daily
 from BackTester import Futures, PortfolioBackTester
 
 def count_inflection_points(price_series: pd.Series) -> pd.Series:
