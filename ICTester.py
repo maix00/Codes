@@ -61,7 +61,7 @@ class ICTester:
         return pd.DataFrame(daily_returns)
 
     def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series], 
-                    frequency: Optional[pd.Timedelta] = None) -> pd.DataFrame:
+                    set_freq: bool = True, frequency: Optional[pd.Timedelta] = None) -> pd.DataFrame:
         """
         将因子函数应用于每个合约的DataFrame。
         
@@ -78,24 +78,25 @@ class ICTester:
         for c, df in self.data.items():
             factors[c] = factor_func(df)
 
-        # 如果因子频率未指定，则尝试从数据中获取
-        if factors and frequency is None:
-            all_freqs = []
-            for freq_series in factors.values():
-                if len(freq_series) > 0:
-                    if len(freq_series.index) > 1:
-                        time_diffs = pd.to_datetime(freq_series.index).copy().to_series().diff().dropna()
-                        if len(time_diffs) > 0:
-                            min_diff = time_diffs.min()
-                            all_freqs.append(min_diff)
-            if all_freqs:
-                freq_counter = Counter(all_freqs)
-                most_common_freq = freq_counter.most_common(1)[0][0]
-                self.factor_frequency = most_common_freq
+        if set_freq:
+            # 如果因子频率未指定，则尝试从数据中获取
+            if factors and frequency is None:
+                all_freqs = []
+                for freq_series in factors.values():
+                    if len(freq_series) > 0:
+                        if len(freq_series.index) > 1:
+                            time_diffs = pd.to_datetime(freq_series.index).copy().to_series().diff().dropna()
+                            if len(time_diffs) > 0:
+                                min_diff = time_diffs.min()
+                                all_freqs.append(min_diff)
+                if all_freqs:
+                    freq_counter = Counter(all_freqs)
+                    most_common_freq = freq_counter.most_common(1)[0][0]
+                    self.factor_frequency = most_common_freq
+                else:
+                    self.factor_frequency = None
             else:
-                self.factor_frequency = None
-        else:
-            self.factor_frequency = frequency
+                self.factor_frequency = frequency
         
         return pd.DataFrame(factors)
 
@@ -322,7 +323,7 @@ def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_gr
 
     # Calculate inflection point factor for all contracts
     factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'))
-    daily_returns = tester.calc_factor(lambda df: log_daily_return(df, price_col='open_price_adjusted'))
+    daily_returns = tester.calc_factor(lambda df: log_daily_return(df, price_col='open_price_adjusted'), set_freq=False)
 
     ic_series, stats = tester.calc_ic(factor_series, daily_returns)
     print(factor_func.__name__, 'IC Stats:\n', stats.T)
