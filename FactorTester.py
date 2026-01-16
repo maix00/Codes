@@ -59,6 +59,33 @@ class FactorTester:
         for c, df in self.data.items():
             daily_returns[c] = daily_return(df, price_col=price_col)
         return pd.DataFrame(daily_returns)
+    
+    @staticmethod
+    def calc_frequency(data: pd.DataFrame) -> Optional[pd.Timedelta]:
+        all_freqs = []
+        for col_name in data.columns:
+            freq_series = data[col_name]
+            if len(freq_series) > 0:
+                if len(freq_series.index) > 1:
+                    time_diffs = pd.to_datetime(freq_series.index).copy().to_series().diff().dropna()
+                    if len(time_diffs) > 0:
+                        min_diff = time_diffs.min()
+                        all_freqs.append(min_diff)
+        if all_freqs:
+            freq_counter = Counter(all_freqs)
+            most_common_freq = freq_counter.most_common(1)[0][0]
+            return most_common_freq
+        else:
+            return None
+
+    def calc_return(self, price_col: str = 'close_price', calc_frequency: Optional[pd.Timedelta] = None,
+                    return_frequency: Optional[pd.Timedelta] = None, log_return: bool = False) -> pd.DataFrame:
+        
+
+        if return_frequency is None:
+            return_df = self.calc_daily_return(price_col=price_col)
+        
+        return return_df
 
     def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series], 
                     set_freq: bool = True, frequency: Optional[pd.Timedelta] = None) -> pd.DataFrame:
@@ -77,29 +104,18 @@ class FactorTester:
         factors = {}
         for c, df in self.data.items():
             factors[c] = factor_func(df)
+        factors_df = pd.DataFrame(factors)
 
         if set_freq:
             # 如果因子频率未指定，则尝试从数据中获取
             if factors and frequency is None:
-                all_freqs = []
-                for freq_series in factors.values():
-                    if len(freq_series) > 0:
-                        if len(freq_series.index) > 1:
-                            time_diffs = pd.to_datetime(freq_series.index).copy().to_series().diff().dropna()
-                            if len(time_diffs) > 0:
-                                min_diff = time_diffs.min()
-                                all_freqs.append(min_diff)
-                if all_freqs:
-                    freq_counter = Counter(all_freqs)
-                    most_common_freq = freq_counter.most_common(1)[0][0]
-                    self.factor_frequency = most_common_freq
-                else:
-                    self.factor_frequency = None
+                self.factor_frequency = self.calc_frequency(factors_df)
+                print(self.factor_frequency)
             else:
                 self.factor_frequency = frequency
         
-        return pd.DataFrame(factors)
-
+        return factors_df
+    
     def calc_rank(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Calculate cross-sectional rank for each datetime.
