@@ -6,12 +6,15 @@ import os
 from BackTester import Futures, FuturesContract, ProductBase
 from collections import Counter
 
+
 class FactorTester:
     def __init__(self, file_paths: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None,
+                 time_col: str = 'trade_time',
                  futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None):
         """
         file_paths: list of parquet file paths, each containing a time series for a future contract.
         """
+        self.time_col = time_col
         self.data = {}  # key: contract name, value: DataFrame
         for path in file_paths:
             df = pd.read_parquet(path)
@@ -19,7 +22,7 @@ class FactorTester:
                 continue
             # Assume each file has a 'trade_time' column and is sorted
             contract = path.split('/')[-1].replace('.parquet', '')
-            self.data[contract] = df.set_index('trade_time')
+            self.data[contract] = df.set_index(self.time_col)
         self.contracts = list(self.data.keys())
         self.start_date = start_date
         self.end_date = end_date
@@ -35,6 +38,9 @@ class FactorTester:
                     for col, col_adj in zip(self.futures_adjust_col, self.futures_adjust_col_adjusted):
                         df[col_adj] = df[col] * df['adjustment_mul'] + df['adjustment_add']
         self.factor_frequency: Optional[pd.Timedelta] = None
+        self.data_frequency: Optional[pd.Timedelta] = self.calc_frequency(self.data[next(iter(self.data))])
+        assert self.data_frequency is not None, "无法计算数据的时间频率。"
+        self.first_factor_timestamp: Optional[pd.Timestamp] = None
 
     def calc_returns(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
         """
@@ -62,6 +68,15 @@ class FactorTester:
     
     @staticmethod
     def calc_frequency(data: pd.DataFrame) -> Optional[pd.Timedelta]:
+        """
+        计算DataFrame的时间频率（最常见的时间差）。
+
+        参数:
+            data: DataFrame，索引为datetime（或字符串），列名为合约名称
+        
+        返回:
+            Optional[pd.Timedelta]: 时间频率，如果没有，则返回None
+        """
         all_freqs = []
         for col_name in data.columns:
             freq_series = data[col_name]
@@ -79,13 +94,113 @@ class FactorTester:
             return None
 
     def calc_return(self, price_col: str = 'close_price', calc_frequency: Optional[pd.Timedelta] = None,
-                    return_frequency: Optional[pd.Timedelta] = None, log_return: bool = False) -> pd.DataFrame:
+                    time_cols: Optional[str|List[str]] = ['trading_day', 'trade_time'], 
+                    first_timestamp: Optional[pd.Timestamp] = None, 
+                    return_frequency: Optional[pd.Timedelta] = None, 
+                    delta_return: bool = False, log_return: bool = False,
+                    open_market: bool = False, close_market: bool = False) -> Optional[pd.DataFrame]:
         
+        assert not (delta_return and log_return), "`delta_return`和`log_return`不能同时为True。"
 
-        if return_frequency is None:
-            return_df = self.calc_daily_return(price_col=price_col)
+        if calc_frequency is None:
+            if self.factor_frequency is not None:
+                calc_frequency = self.factor_frequency
+            else:
+                calc_frequency = self.data_frequency
+        assert calc_frequency is not None, "`calc_frequency`不能是None。无法计算因子频率。"
         
-        return return_df
+        if return_frequency is None:
+            if self.factor_frequency is not None:
+                return_frequency = self.factor_frequency
+            else:
+                return_frequency = self.data_frequency
+        assert return_frequency is not None, "`return_frequency`不能是None。无法计算因子频率。"
+
+        if return_frequency == pd.Timedelta('1 day') and calc_frequency == pd.Timedelta('1 day'):
+            assert not (open_market and close_market), "`open_market`和`close_market`不能同时为True。" 
+
+        returns_all = {}
+        first_timestamp = first_timestamp if first_timestamp is not None else self.first_factor_timestamp
+    
+        for contract, df in self.data.items():
+            if price_col not in df.columns:
+                raise ValueError(f"DataFrame {contract} 中缺少列 {price_col}")
+            
+            temp_df = df.copy()
+            if time_cols:
+                temp_df = temp_df.reset_index()
+                temp_df[time_cols[0]] = pd.to_datetime(temp_df[time_cols[0]])#.dt.date
+                temp_df[time_cols[1]] = pd.to_datetime(temp_df[time_cols[1]])
+                temp_df = temp_df.set_index(time_cols)
+            temp_df = temp_df.sort_index()
+            temp_series = temp_df[price_col].droplevel(0)
+            
+            is_date = False
+            if first_timestamp:
+                ts_start = pd.to_datetime(first_timestamp)
+                is_date = (':' not in str(first_timestamp)) and (' ' not in str(first_timestamp))
+                level = 0 if is_date else 1
+                temp_df = temp_df[temp_df.index.get_level_values(level) >= ts_start]
+
+            all_dates = temp_df.index.get_level_values(0)
+            indices_of_next_row_changed = np.where(all_dates[:-1] != all_dates[1:])[0]
+            indices_market = indices_of_next_row_changed if close_market else indices_of_next_row_changed + 1 if open_market else None
+            calc_step = int(calc_frequency / pd.Timedelta('1 day'))
+            return_step = int(return_frequency / pd.Timedelta('1 day'))
+            all_datetimes = temp_df.index.get_level_values(1)
+
+            if calc_frequency:
+                if calc_frequency.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and (open_market or close_market):
+                    assert indices_market is not None
+                    start_datetimes = all_datetimes[0:1].append(all_datetimes[indices_market[calc_step-1::calc_step]])
+                else:
+                    last_t = all_datetimes[0] - calc_frequency # 保证第一个点被选中
+                    keep_indices = []
+                    # 这个循环次数远少于原始代码，因为它只扫描时间轴一次
+                    for i, t in enumerate(all_datetimes):
+                        if t >= last_t + calc_frequency:
+                            keep_indices.append(i)
+                            last_t = t
+                    start_datetimes = all_datetimes[np.array(keep_indices)]
+            else:
+                start_datetimes = all_datetimes
+            start_prices = temp_series.reindex(start_datetimes)
+            assert len(start_prices) == len(start_datetimes), "start_prices 和 start_datetimes 长度不一致。"
+
+            if return_frequency is not None and\
+                return_frequency.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and (open_market or close_market):
+                    assert indices_market is not None
+                    end_datetimes = all_datetimes[indices_market[return_step-1::calc_step]]
+                    len_diff = len(start_datetimes) - len(end_datetimes)
+                    assert len_diff >= 0, "start_datetimes 长度不得比 end_datetimes 短。"
+                    end_datetimes = end_datetimes.append(all_datetimes[indices_market[-len_diff:]] + return_frequency)
+            else:
+                end_datetimes = start_datetimes + return_frequency
+
+            assert len(start_datetimes) == len(end_datetimes), "start_datetimes 和 end_datetimes 长度不一致。"
+            
+            end_prices = temp_series.reindex(end_datetimes)
+            assert len(end_prices) == len(end_datetimes), "end_prices 和 end_datetimes 长度不一致。"
+            
+            raw_return = end_prices.values / start_prices.values
+
+            if is_date:
+                index = temp_df.index[temp_df.index.get_level_values(1).isin(start_datetimes)].get_level_values(0)
+                assert len(index) == len(start_datetimes), "index 和 start_datetimes 长度不一致。"
+                final_series = pd.Series(raw_return, index=index)
+            else:
+                final_series = pd.Series(raw_return, index=start_datetimes)
+
+            if delta_return:
+                final_series = final_series - 1
+            elif log_return:
+                final_series = np.log(final_series)
+                
+            returns_all[contract] = final_series
+
+        returns_df = pd.DataFrame(returns_all)
+        returns_df.index = returns_df.index.astype(str)
+        return returns_df
 
     def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series], 
                     set_freq: bool = True, frequency: Optional[pd.Timedelta] = None) -> pd.DataFrame:
@@ -110,10 +225,19 @@ class FactorTester:
             # 如果因子频率未指定，则尝试从数据中获取
             if factors and frequency is None:
                 self.factor_frequency = self.calc_frequency(factors_df)
-                print(self.factor_frequency)
             else:
                 self.factor_frequency = frequency
-        
+
+            # # 判断第几行开始的因子值不是nan，打印合约名字、index日期、因子值
+            # for contract, first_idx in factors_df.apply(lambda col: col.first_valid_index(), axis=0).items():
+            #     if first_idx is not None:
+            #         first_non_nan_value = factors_df.loc[first_idx][contract]
+            #         print(f"Contract: {contract}, First non-NaN index: {first_idx}, Value: {first_non_nan_value}")
+
+            # 获取第一个因子的时间戳
+            if not factors_df.empty:
+                self.first_factor_timestamp = factors_df.index[0]
+
         return factors_df
     
     def calc_rank(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -256,7 +380,7 @@ class FactorTester:
             plt.figure(figsize=(12, 6))
             start_date = start_date if start_date is not None else self.start_date
             end_date = end_date if end_date is not None else self.end_date
-            print(start_date, end_date)
+            # print(start_date, end_date)
             dates = []  # Initialize dates as an empty list
             for name in group_names:
                 if plot_n_group_list is not None and name.split('_')[-1] not in [str(n) for n in plot_n_group_list]:
@@ -309,8 +433,16 @@ if __name__ == '__main__':
 def log_daily_return(df, price_col='close_price'):
     if 'trading_day' not in df.columns:
         raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
-    daily_close = df.groupby('trading_day')[price_col].last()
-    return np.log(daily_close).diff()
+    if price_col.startswith('close_price'):
+        daily_close = df.groupby('trading_day')[price_col].last()
+        # Calculate daily return as today's close price change
+        return np.log(daily_close).diff()
+    elif price_col.startswith('open_price'):
+        daily_open = df.groupby('trading_day')[price_col].first()
+        # Calculate daily return as next day's open price change
+        return np.log(daily_open).diff().shift(-1)
+    else:
+        raise ValueError("Invalid price_col argument. Must be 'close_price' or 'open_price'.")
 
 def daily_return(df, price_col: str = 'close_price'):
     if 'trading_day' not in df.columns:
@@ -321,12 +453,20 @@ def daily_return(df, price_col: str = 'close_price'):
         return daily_close.pct_change()
     elif price_col.startswith('open_price'):
         daily_open = df.groupby('trading_day')[price_col].first()
+        # print(daily_open[:5])
         # Calculate daily return as next day's open price change
         return daily_open.pct_change().shift(-1)
     else:
         raise ValueError("Invalid price_col argument. Must be 'close_price' or 'open_price'.")
 
 def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
+    
+    import cProfile
+    import pstats
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+    
     parquet_dir = '../data/main_mink/'
     file_list = [
         os.path.join(parquet_dir, f)
@@ -339,7 +479,9 @@ def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_gr
 
     # Calculate inflection point factor for all contracts
     factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'))
-    daily_returns = tester.calc_factor(lambda df: log_daily_return(df, price_col='open_price_adjusted'), set_freq=False)
+    # daily_returns = tester.calc_factor(lambda df: daily_return(df, price_col='open_price_adjusted'), set_freq=False)
+    daily_returns = tester.calc_return(price_col='open_price_adjusted', open_market=True, delta_return=True)
+    assert daily_returns is not None
 
     ic_series, stats = tester.calc_ic(factor_series, daily_returns)
     print(factor_func.__name__, 'IC Stats:\n', stats.T)
@@ -355,3 +497,9 @@ def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_gr
     #     print(date, groups['group_0'][date])
     #     print(date, open_returns_groups['group_0'][date])
     #     pass
+
+    profiler.disable()
+    # 输出分析结果
+    stats = pstats.Stats(profiler)
+    stats.sort_stats('cumulative')  # 按累计时间排序
+    stats.print_stats(20)  # 显示前20个耗时最多的函数
