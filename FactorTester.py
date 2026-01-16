@@ -42,7 +42,7 @@ class FactorTester:
         assert self.data_frequency is not None, "无法计算数据的时间频率。"
         self.first_factor_timestamp: Optional[pd.Timestamp] = None
 
-    def calc_returns(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
+    def calc_interval_return(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
         """
         Calculate returns for each contract.
         interval: time interval for returns (in rows, e.g., 1 for next row)
@@ -55,7 +55,8 @@ class FactorTester:
             returns[c] = df[price_col].pct_change(periods=interval)
         return pd.DataFrame(returns)
     
-    def calc_daily_return(self, price_col: str = 'open_price') -> pd.DataFrame:
+    def calc_daily_return(self, price_col: str = 'open_price',
+                          open_market: bool = False, close_market: bool = False) -> pd.DataFrame:
         """
         计算每个合约的每日收益率。
         price_col: 价格列名
@@ -63,7 +64,8 @@ class FactorTester:
         """
         daily_returns = {}
         for c, df in self.data.items():
-            daily_returns[c] = daily_return(df, price_col=price_col)
+            daily_returns[c] = daily_return(df, price_col=price_col, 
+                                            open_market=open_market, close_market=close_market)
         return pd.DataFrame(daily_returns)
     
     @staticmethod
@@ -98,7 +100,7 @@ class FactorTester:
                     first_timestamp: Optional[pd.Timestamp] = None, 
                     return_frequency: Optional[pd.Timedelta] = None, 
                     delta_return: bool = False, log_return: bool = False,
-                    open_market: bool = False, close_market: bool = False) -> Optional[pd.DataFrame]:
+                    open_market: bool = False, close_market: bool = False) -> pd.DataFrame:
         
         assert not (delta_return and log_return), "`delta_return`和`log_return`不能同时为True。"
 
@@ -118,6 +120,23 @@ class FactorTester:
 
         if return_frequency == pd.Timedelta('1 day') and calc_frequency == pd.Timedelta('1 day'):
             assert not (open_market and close_market), "`open_market`和`close_market`不能同时为True。" 
+            returns_df = self.calc_daily_return(price_col=price_col, open_market=open_market, close_market=close_market)
+            if not delta_return:
+                returns_df = returns_df + 1
+            if log_return:
+                returns_df = pd.DataFrame(np.log(returns_df))
+            return returns_df
+        
+        if self.data_frequency is not None and\
+            calc_frequency == self.data_frequency and\
+            return_frequency.total_seconds() % self.data_frequency.total_seconds() == 0:
+            interval = int(return_frequency / self.data_frequency)
+            returns_df = self.calc_interval_return(interval=interval, price_col=price_col)
+            if not delta_return:
+                returns_df = returns_df + 1
+            if log_return:
+                returns_df = pd.DataFrame(np.log(returns_df))
+            return returns_df
 
         returns_all = {}
         first_timestamp = first_timestamp if first_timestamp is not None else self.first_factor_timestamp
@@ -311,7 +330,7 @@ class FactorTester:
         """
         # Calculate daily returns at next open
         assert 'open_price_adjusted' in next(iter(self.data.values())).columns, "DataFrames must contain 'open_price_adjusted' column."
-        open_returns = self.calc_daily_return(price_col='open_price_adjusted')
+        open_returns = self.calc_daily_return(price_col='open_price_adjusted', open_market=True)
 
         # Plot adjustment for group numbers
         plot_n_group_list = [n_groups + n_group if n_group < 0 else n_group for n_group in plot_n_group_list] if plot_n_group_list else None
@@ -419,7 +438,7 @@ if __name__ == '__main__':
         if f.endswith('.parquet') and '_S' not in f and '-S' not in f
     ]
     tester = FactorTester(file_list, end_date='2025-05-31', futures_flag=True, futures_adjust_col=['close_price'])
-    returns = tester.calc_returns(interval=1)
+    returns = tester.calc_interval_return(interval=1)
     factor = tester.calc_factor(lambda df: df['close_price_adjusted'].rolling(5).mean())
     print(factor)
     ic_series, stats = tester.calc_ic(factor, returns)
@@ -444,20 +463,18 @@ def log_daily_return(df, price_col='close_price'):
     else:
         raise ValueError("Invalid price_col argument. Must be 'close_price' or 'open_price'.")
 
-def daily_return(df, price_col: str = 'close_price'):
+def daily_return(df, price_col: str = 'close_price', open_market: bool = False, close_market: bool = False) -> pd.Series:
     if 'trading_day' not in df.columns:
         raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
-    if price_col.startswith('close_price'):
-        daily_close = df.groupby('trading_day')[price_col].last()
-        # Calculate daily return as today's close price change
-        return daily_close.pct_change()
-    elif price_col.startswith('open_price'):
-        daily_open = df.groupby('trading_day')[price_col].first()
-        # print(daily_open[:5])
-        # Calculate daily return as next day's open price change
-        return daily_open.pct_change().shift(-1)
+    daily_price = df.groupby('trading_day')[price_col]
+    assert open_market or close_market, "At least one of open_market or close_market must be True."
+    assert not (open_market and close_market), "Only one of open_market or close_market can be True."
+    if open_market:
+        return daily_price.first().pct_change().shift(-1)
+    elif close_market:
+        return daily_price.last().pct_change()
     else:
-        raise ValueError("Invalid price_col argument. Must be 'close_price' or 'open_price'.")
+        raise ValueError("Invalid combination of open_market and close_market arguments.")
 
 def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
     
