@@ -24,6 +24,7 @@ class FactorTester:
             contract = path.split('/')[-1].replace('.parquet', '')
             self.data[contract] = df.set_index(self.time_col)
         self.contracts = list(self.data.keys())
+        self.products = list(self.data.keys())
         self.start_date = start_date
         self.end_date = end_date
         self.futures_flag = futures_flag
@@ -41,6 +42,29 @@ class FactorTester:
         self.data_frequency: Optional[pd.Timedelta] = self.calc_frequency(self.data[next(iter(self.data))])
         assert self.data_frequency is not None, "无法计算数据的时间频率。"
         self.first_factor_timestamp: Optional[pd.Timestamp] = None
+
+    def add_data(self, product: ProductBase, df: pd.DataFrame|str, futures_adjust_col: Optional[List[str]] = None):
+        if isinstance(df, str):
+            assert os.path.exists(df), "数据文件不存在。"
+            if df.endswith('.parquet'):
+                df = pd.read_parquet(df)
+            elif df.endswith('.csv'):
+                df = pd.read_csv(df)
+            elif df.endswith('.xlsx'):
+                df = pd.read_excel(df)
+            else:
+                raise ValueError("不支持的数据格式。")
+        if isinstance(product, Futures):
+            futures_adjust_col = futures_adjust_col or self.futures_adjust_col
+            if futures_adjust_col:
+                futures_adjust_col_adjusted = [col + '_adjusted' for col in futures_adjust_col]
+                if any(col not in df.columns for col in futures_adjust_col_adjusted):
+                    assert 'adjustment_mul' in df.columns
+                    assert 'adjustment_add' in df.columns
+                    for col, col_adj in zip(futures_adjust_col, futures_adjust_col_adjusted):
+                        df[col_adj] = df[col] * df['adjustment_mul'] + df['adjustment_add']
+        self.data[product] = df.reset_index().set_index(self.time_col)
+        self.products.append(product)
 
     def calc_interval_return(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
         """
@@ -118,6 +142,7 @@ class FactorTester:
                 return_frequency = self.data_frequency
         assert return_frequency is not None, "`return_frequency`不能是None。无法计算因子频率。"
 
+        # BUT WHAT ABOUT FIRST_TIMESTAMP?
         if return_frequency == pd.Timedelta('1 day') and calc_frequency == pd.Timedelta('1 day'):
             assert not (open_market and close_market), "`open_market`和`close_market`不能同时为True。" 
             returns_df = self.calc_daily_return(price_col=price_col, open_market=open_market, close_market=close_market)
