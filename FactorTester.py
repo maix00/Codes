@@ -145,7 +145,7 @@ class FactorTester:
         self.logger.info(f"将{product}的索引设置为{self.time_col}")
         self.data_freq[product] = pd.Series(self.data[product].index.get_level_values(self.time_col_num - 1).sort_values().diff().dropna()).mode()[0]
         self.logger.info(f"{product}的数据频率为{self.data_freq[product]}")
-        self.products.append(product)
+        self.products = set(self.data.keys())
         self.product_mapping[product.name] = product
 
     def calc_interval_return(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
@@ -372,7 +372,7 @@ class FactorTester:
             date_index = True if self.factor_freq[factor_name] == pd.Timedelta('1 day') else False
             this_return_label = (this_return_freq, return_price_col, date_index, return_open_market, return_close_market)
             if this_return_label in self.return_data and\
-                self.return_data[this_return_label].columns == self.products:
+                set(self.return_data[this_return_label].columns) == self.products:
                 return_df = self.return_data[this_return_label]
             else:
                 return_df = self.calc_return(price_col=return_price_col,
