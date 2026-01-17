@@ -72,6 +72,7 @@ class FactorTester:
     def add_data(self, product: ProductBase, df: pd.DataFrame|str, futures_adjust_col: Optional[List[str]] = None):
         if isinstance(df, str):
             assert os.path.exists(df), "数据文件不存在。"
+            self.logger.info(f"{product}的数据文件开始加载: {df}")
             if df.endswith('.parquet'):
                 df = pd.read_parquet(df)
             elif df.endswith('.csv'):
@@ -80,7 +81,9 @@ class FactorTester:
                 df = pd.read_excel(df)
             else:
                 raise ValueError(f"不支持的数据格式：{df}")
+            self.logger.info(f"{product}的数据文件加载完成，数据行数: {len(df)}")
         if df.empty:
+            self.logger.warning(f"{product}的数据为空，跳过添加。")
             return
         if isinstance(product, Futures):
             futures_adjust_col = futures_adjust_col or self.futures_adjust_col
@@ -92,6 +95,7 @@ class FactorTester:
                     for col, col_adj in zip(futures_adjust_col, futures_adjust_col_adjusted):
                         df[col_adj] = df[col] * df['adjustment_mul'] + df['adjustment_add']
         self.data[product] = df.reset_index().set_index(self.time_col)
+        self.logger.info(f"将{product}的索引设置为{self.time_col}")
         self.products.append(product)
 
     def calc_interval_return(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
