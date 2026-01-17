@@ -11,7 +11,7 @@ import logging
 class FactorTester:
     def __init__(self, file_paths: List[str], 
                  start_date: Optional[str] = None, end_date: Optional[str] = None,
-                 time_col: str|List[str] = 'trade_time',#['trading_day', 'trade_time'], 
+                 time_col: str|List[str] = ['trading_day', 'trade_time'], #'trade_time',#['trading_day', 'trade_time'], 
                  futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None,
                  logger_file: bool = True, logger_dir_path: str = '../data/factor_tester_log/',
                  logger_console: bool = False):
@@ -126,11 +126,11 @@ class FactorTester:
                 self.logger.error(f"{product}的数据中缺少时间列{self.time_col[0]}，无法设置索引。")
                 raise AssertionError(f"{product}的数据中缺少时间列{self.time_col[0]}，无法设置索引。")
             try:
-                df[self.time_col[0]] = pd.to_datetime(df[self.time_col[0]]).dt.date
-                self.logger.info(f"将{product}的时间列{self.time_col[0]}转换为date格式")
+                df[self.time_col[0]] = pd.to_datetime(df[self.time_col[0]])
+                self.logger.info(f"将{product}的时间列{self.time_col[0]}转换为datetime格式")
             except:
-                self.logger.error(f"将{product}的时间列{self.time_col[0]}转换为date格式失败")
-                raise TypeError(f"无法将{product}的{self.time_col[0]}转换为date格式")
+                self.logger.error(f"将{product}的时间列{self.time_col[0]}转换为datetime格式失败")
+                raise TypeError(f"无法将{product}的{self.time_col[0]}转换为datetime格式")
             try:
                 assert self.time_col[1] in df.columns
             except:
@@ -287,7 +287,7 @@ class FactorTester:
             returns_all[contract] = final_series
 
         returns_df = pd.DataFrame(returns_all)
-        returns_df.index = returns_df.index.astype(str)
+        # returns_df.index = returns_df.index.astype(str)
         return returns_df
 
     def calc_factor_freq(self, data: pd.DataFrame, name: Optional[str] = None) -> Optional[pd.Timedelta]:
@@ -549,24 +549,9 @@ if __name__ == '__main__':
     # groups = tester.group_five_classes(factor)
     # print(groups['top'][:5])  # print top group for first 5 datetimes
 
-#  计算每日收益率（按trading_day分组，收盘价对数收益）
-def log_daily_return(df, price_col='close_price'):
-    if 'trading_day' not in df.columns:
-        raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
-    if price_col.startswith('close_price'):
-        daily_close = df.groupby('trading_day')[price_col].last()
-        # Calculate daily return as today's close price change
-        return np.log(daily_close).diff()
-    elif price_col.startswith('open_price'):
-        daily_open = df.groupby('trading_day')[price_col].first()
-        # Calculate daily return as next day's open price change
-        return np.log(daily_open).diff().shift(-1)
-    else:
-        raise ValueError("Invalid price_col argument. Must be 'close_price' or 'open_price'.")
-
 def daily_return(df, price_col: str = 'close_price', open_market: bool = False, close_market: bool = False) -> pd.Series:
-    if 'trading_day' not in df.columns:
-        raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
+    # if 'trading_day' not in df.columns:
+    #     raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
     daily_price = df.groupby('trading_day')[price_col]
     assert open_market or close_market, "At least one of open_market or close_market must be True."
     assert not (open_market and close_market), "Only one of open_market or close_market can be True."
@@ -598,7 +583,6 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
 
     # Calculate inflection point factor for all contracts
     factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'), factor_name=factor_name)
-    # daily_returns = tester.calc_factor(lambda df: daily_return(df, price_col='open_price_adjusted'), set_freq=False)
     daily_returns = tester.calc_return(price_col='open_price_adjusted', open_market=True, delta_return=True)
     assert daily_returns is not None
 
