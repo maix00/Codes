@@ -168,7 +168,7 @@ class FactorTester:
                     calc_freq: Optional[str|pd.Timedelta] = None,
                     return_freq: Optional[str|pd.Timedelta] = None, 
                     delta_return: bool = False, log_return: bool = False,
-                    open_market: bool = False, close_market: bool = False) -> pd.DataFrame:
+                    open_market: bool = False, close_market: bool = False) -> tuple[pd.DataFrame, bool, bool]:
         
         assert not (delta_return and log_return), "`delta_return`和`log_return`不能同时为True。"
 
@@ -197,7 +197,7 @@ class FactorTester:
                 returns_df = returns_df + 1
             if log_return:
                 returns_df = pd.DataFrame(np.log(returns_df))
-            return returns_df
+            return (returns_df, delta_return, log_return)
         
         if data_frequency is not None and calc_freq is not None and calc_freq == data_frequency and\
             return_freq is not None and return_freq.total_seconds() % data_frequency.total_seconds() == 0:
@@ -207,7 +207,7 @@ class FactorTester:
                 returns_df = returns_df + 1
             if log_return:
                 returns_df = pd.DataFrame(np.log(returns_df))
-            return returns_df
+            return (returns_df, delta_return, log_return)
 
         returns_all = {}
     
@@ -283,7 +283,7 @@ class FactorTester:
             returns_all[product] = final_series
 
         returns_df = pd.DataFrame(returns_all)
-        return returns_df
+        return (returns_df, delta_return, log_return)
 
     def calc_factor_freq(self, data: pd.DataFrame, name: Optional[str] = None) -> Optional[pd.Timedelta]:
         
@@ -368,19 +368,9 @@ class FactorTester:
         ic_stats = {}
         for factor_name in factor_names:
             factor_rank = self.calc_rank(self.factor_data[factor_name])
-            this_return_freq = return_freq if return_freq is not None else self.factor_freq[factor_name]
-            date_index = True if self.factor_freq[factor_name] == pd.Timedelta('1 day') else False
-            this_return_label = (this_return_freq, return_price_col, date_index, return_open_market, return_close_market)
-            if this_return_label in self.return_data and\
-                set(self.return_data[this_return_label].columns) == self.products:
-                return_df = self.return_data[this_return_label]
-            else:
-                return_df = self.calc_return(price_col=return_price_col,
-                                             return_freq=this_return_freq,
-                                             date_index=date_index,
-                                             open_market=return_open_market, 
-                                             close_market=return_close_market)
-                self.return_data[this_return_label] = return_df
+            return_df, delta_return, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col,
+                                                                    open_market=return_open_market, close_market=return_close_market,
+                                                                    return_freq=return_freq)
             return_rank = self.calc_rank(return_df)
             dt_index = factor_rank.index.intersection(return_rank.index)
             start_date = start_date if start_date is not None else self.start_date
@@ -408,9 +398,6 @@ class FactorTester:
         return pd.DataFrame(ic_series), pd.DataFrame(ic_stats)
 
     def ic_stats(self, ic_series: pd.Series) -> pd.Series:
-        """
-        Calculate mean, std, IR of IC series.
-        """
         mean = ic_series.mean()
         std = ic_series.std()
         ir = mean / std if std != 0 else np.nan
@@ -421,9 +408,37 @@ class FactorTester:
             'mean': mean, 'std': std, 'IR': ir, 't_stat': t_stat, 'max': max_ic, 'min': min_ic
         })
         return stats_df
+    
+    def cache_return(self, price_col: str = 'close_price_adjusted',
+                     date_index: bool = False, open_market: bool = False, close_market: bool = False,
+                     return_freq: Optional[str|pd.Timedelta] = None,
+                     calc_freq: Optional[str|pd.Timedelta] = None) -> tuple[pd.DataFrame, bool, bool]:
+        return_label = (return_freq, calc_freq, price_col, date_index, open_market, close_market)
+        if return_label in self.return_data and\
+            set(self.return_data[return_label][0].columns) == self.products:
+            return self.return_data[return_label]
+        else:
+            outcome = self.calc_return(price_col=price_col, return_freq=return_freq, calc_freq=calc_freq,
+                                       date_index=date_index, open_market=open_market, close_market=close_market)
+            self.return_data[return_label] = outcome
+            return outcome
+        
+    def cache_return_by_factor_name(self, factor_name: str, price_col: str = 'close_price_adjusted',
+                     date_index: Optional[bool] = None, open_market: bool = False, close_market: bool = False,
+                     return_freq: Optional[str|pd.Timedelta] = None,
+                     calc_freq: Optional[str|pd.Timedelta] = None) -> tuple[pd.DataFrame, bool, bool]:
+        return_freq = return_freq if return_freq is not None else self.factor_freq[factor_name]
+        calc_freq = calc_freq if calc_freq is not None else self.factor_freq[factor_name]
+        date_index = date_index if date_index is not None else \
+            True if self.factor_freq[factor_name] == pd.Timedelta('1 day') else False
+        return self.cache_return(price_col=price_col, date_index=date_index, open_market=open_market,
+                                 close_market=close_market, return_freq=return_freq, calc_freq=calc_freq)
 
     def group_classes(self, factor_name: str, n_groups: int = 5, plot_flag: bool = False, 
                       start_date: Optional[str] = None, end_date: Optional[str] = None,
+                      return_price_col: str = 'close_price_adjusted',
+                      return_open_market: bool = False, return_close_market: bool = False,
+                      return_freq: Optional[str|pd.Timedelta] = None,
                       plot_n_group_list: Optional[List[int]] = None) -> Tuple[Dict[str, Dict[str, List[ProductBase]]], Dict[str, Dict[str, float]]]:
         """
         For each datetime, split contracts into n_groups groups.
@@ -431,8 +446,12 @@ class FactorTester:
         n_groups: number of groups to split into (default: 5)
         """
         # Calculate daily returns at next open
-        assert 'open_price_adjusted' in next(iter(self.data.values())).columns, "DataFrames must contain 'open_price_adjusted' column."
-        open_returns = self.calc_daily_return(price_col='open_price_adjusted', open_market=True)
+        returns, delta_return, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col,
+                                                                    open_market=return_open_market, close_market=return_close_market,
+                                                                    return_freq=return_freq)
+
+        if not delta_return:
+            returns = returns - 1
 
         assert factor_name in self.factor_data, "Factor name must be in factor_data."
         factor_df = self.factor_data[factor_name]
@@ -443,7 +462,7 @@ class FactorTester:
         group_names = ['group_' + str(i) for i in range(n_groups)]
         group_names = group_names[::-1]
         groups = {name: {} for name in group_names}
-        open_returns_groups = {name: {} for name in group_names}
+        returns_groups = {name: {} for name in group_names}
         
         for dt, row in factor_df.iterrows():
             dt_str = str(dt)
@@ -464,19 +483,19 @@ class FactorTester:
                     group_idx = n_groups - 1 - i  # Reverse order: bottom group first
                     groups[group_names[group_idx]][dt_str] = list(group_contracts)
                     contract_names = [product.name for product in group_contracts]
-                    open_returns_groups[group_names[group_idx]][dt_str] = np.mean(np.asarray(open_returns.loc[dt_str][contract_names].values, dtype=float))
+                    returns_groups[group_names[group_idx]][dt_str] = np.mean(np.asarray(returns.loc[dt_str][contract_names].values, dtype=float))
             
             # Fill remaining groups (if n < n_groups) with empty lists
             for i in range(min(n, n_groups), n_groups):
                 groups[group_names[i]][dt_str] = []
-                open_returns_groups[group_names[i]][dt_str] = np.nan
+                returns_groups[group_names[i]][dt_str] = np.nan
 
         report_groups = {}
         for name in group_names:
-            dates = list(open_returns_groups[name].keys()) if open_returns_groups[name] else []
+            dates = list(returns_groups[name].keys()) if returns_groups[name] else []
             dates = [date for date in dates if start_date <= date] if start_date else dates
             dates = [date for date in dates if date <= end_date] if end_date else dates
-            returns = [open_returns_groups[name][date] for date in dates]
+            returns = [returns_groups[name][date] for date in dates]
             returns_series = pd.Series(returns).dropna()
             cumulative_returns = (1 + returns_series).cumprod()
             metrics = {
@@ -509,10 +528,10 @@ class FactorTester:
             for name in group_names:
                 if plot_n_group_list is not None and name.split('_')[-1] not in [str(n) for n in plot_n_group_list]:
                     continue
-                dates = list(open_returns_groups[name].keys()) if open_returns_groups[name] else []
+                dates = list(returns_groups[name].keys()) if returns_groups[name] else []
                 dates = [date for date in dates if start_date <= date] if start_date else dates
                 dates = [date for date in dates if date <= end_date] if end_date else dates
-                returns = [open_returns_groups[name][date] for date in dates]
+                returns = [returns_groups[name][date] for date in dates]
                 cumulative_returns = []
                 prev_value = 10000
                 for ret in returns:
@@ -532,7 +551,7 @@ class FactorTester:
             plt.tight_layout()
             plt.show()
 
-        return groups, open_returns_groups
+        return groups, returns_groups
 
 def daily_return(df, price_col: str = 'close_price', open_market: bool = False, close_market: bool = False) -> pd.Series:
     daily_price = df.groupby('trading_day')[price_col]
@@ -568,17 +587,16 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_open_market=True)
     print(factor_name, 'IC Stats:\n', stats)
 
-    groups, open_returns_groups = tester.group_classes(factor_name, 
-                                                       plot_flag=True, 
-                                                       n_groups=n_groups, 
-                                                       plot_n_group_list=plot_n_group_list,
-                                                       end_date='2025-12-31', 
-                                                       start_date='2025-01-01')
+    groups, returns_groups = tester.group_classes(factor_name, 
+                                                  plot_flag=True, n_groups=n_groups, plot_n_group_list=plot_n_group_list,
+                                                  start_date='2025-01-01', end_date='2025-12-31',
+                                                  return_price_col='open_price_adjusted', return_open_market=True
+                                                )
     # # Get the earliest five dates from the 'top' group
     # earliest_dates = sorted(groups['group_0'].keys())[:5]
     # for date in earliest_dates:
     #     print(date, groups['group_0'][date])
-    #     print(date, open_returns_groups['group_0'][date])
+    #     print(date, returns_groups['group_0'][date])
     #     pass
 
     profiler.disable()
