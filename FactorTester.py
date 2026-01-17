@@ -50,7 +50,7 @@ class FactorTester:
         self.futures_flag = futures_flag
         self.futures_adjust_col = futures_adjust_col
         self.factor_frequency: Optional[pd.Timedelta] = None
-        self.data_frequency: Optional[pd.Timedelta] = self.calc_frequency(self.data[next(iter(self.data))])
+        self.data_frequency: Optional[pd.Timedelta] = next(iter(self.data_freq.values())) if self.data_freq else None
         assert self.data_frequency is not None, "无法计算数据的时间频率。"
         self.first_factor_timestamp: Optional[pd.Timestamp] = None
         self.logger.info(f"FactorTester initialized with {len(self.products)} products")
