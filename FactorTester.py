@@ -352,7 +352,6 @@ class FactorTester:
             # 如果因子频率未指定，则尝试从数据中获取
             if factors and frequency is None:
                 self.factor_frequency = self.calc_factor_freq(data=factors_df, name=factor_name)
-                # self.factor_frequency = self.calc_frequency(factors_df)
             else:
                 self.factor_frequency = frequency
             # 获取第一个因子的时间戳
@@ -578,7 +577,8 @@ def daily_return(df, price_col: str = 'close_price', open_market: bool = False, 
     else:
         raise ValueError("Invalid combination of open_market and close_market arguments.")
 
-def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
+def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] = None,
+                             n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
     
     import cProfile
     import pstats
@@ -597,7 +597,7 @@ def integrated_ic_test_daily(factor_func: Callable, n_groups: int = 5, plot_n_gr
                       futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
 
     # Calculate inflection point factor for all contracts
-    factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'))
+    factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'), factor_name=factor_name)
     # daily_returns = tester.calc_factor(lambda df: daily_return(df, price_col='open_price_adjusted'), set_freq=False)
     daily_returns = tester.calc_return(price_col='open_price_adjusted', open_market=True, delta_return=True)
     assert daily_returns is not None

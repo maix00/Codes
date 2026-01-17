@@ -42,6 +42,6 @@ def inflection_point_factor(df: pd.DataFrame, price_col: str = 'close_price_adju
     return factor
 
 if __name__ == '__main__':
-    integrated_ic_test_daily(inflection_point_factor, n_groups=5,)
+    integrated_ic_test_daily(inflection_point_factor, n_groups=5, factor_name='InflectionPoint5D')
     # integrated_ic_test_daily(inflection_point_factor, n_groups=20, plot_n_group_list=[0, -1])
     
