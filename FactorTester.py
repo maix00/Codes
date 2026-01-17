@@ -38,6 +38,7 @@ class FactorTester:
         self.set_time_col(time_col)
         self.products = []
         self.data = {}
+        self.data_freq = {}
         for path in file_paths:
             product_name = path.split('/')[-1].replace('.parquet', '')
             product = Futures(product_name) if futures_flag else ProductBase(product_name)
@@ -54,11 +55,14 @@ class FactorTester:
 
     def set_time_col(self, time_col: str|List[str]):
         self.time_col = time_col
+        self.time_col_num = 0
         if isinstance(time_col, str):
             self.time_col = [time_col]
         if len(self.time_col) == 1:
+            self.time_col_num = 1
             self.logger.info(f"将`time_col`设置为单列: {self.time_col[0]}")
         elif len(self.time_col) == 2:
+            self.time_col_num = 2
             self.logger.info(f"将`time_col`设置为双列: {self.time_col[0]} and {self.time_col[1]}")
             self.logger.info("首列假定为`trading_day`，第二列假定为`trade_time`")
         else:
@@ -94,8 +98,44 @@ class FactorTester:
                     assert 'adjustment_add' in df.columns
                     for col, col_adj in zip(futures_adjust_col, futures_adjust_col_adjusted):
                         df[col_adj] = df[col] * df['adjustment_mul'] + df['adjustment_add']
+        if self.time_col_num == 1:
+            try:
+                assert self.time_col[0] in df.columns
+            except:
+                self.logger.error(f"{product}的数据中缺少时间列{self.time_col[0]}，无法设置索引。")
+                raise AssertionError(f"{product}的数据中缺少时间列{self.time_col[0]}，无法设置索引。")
+            try:
+                df[self.time_col[0]] = pd.to_datetime(df[self.time_col[0]])
+                self.logger.info(f"将{product}的时间列{self.time_col[0]}转换为datetime格式")
+            except:
+                self.logger.error(f"将{product}的时间列{self.time_col[0]}转换为datetime格式失败")
+                raise TypeError(f"无法将{product}的{self.time_col[0]}转换为datetime格式")
+        elif self.time_col_num == 2:
+            try:
+                assert self.time_col[0] in df.columns
+            except:
+                self.logger.error(f"{product}的数据中缺少时间列{self.time_col[0]}，无法设置索引。")
+                raise AssertionError(f"{product}的数据中缺少时间列{self.time_col[0]}，无法设置索引。")
+            try:
+                df[self.time_col[0]] = pd.to_datetime(df[self.time_col[0]]).dt.date
+                self.logger.info(f"将{product}的时间列{self.time_col[0]}转换为date格式")
+            except:
+                self.logger.error(f"将{product}的时间列{self.time_col[0]}转换为date格式失败")
+                raise TypeError(f"无法将{product}的{self.time_col[0]}转换为date格式")
+            try:
+                assert self.time_col[1] in df.columns
+            except:
+                self.logger.error(f"{product}的数据中缺少时间列{self.time_col[1]}，无法设置索引。")
+                raise AssertionError(f"{product}的数据中缺少时间列{self.time_col[1]}，无法设置索引。")
+            try:
+                df[self.time_col[1]] = pd.to_datetime(df[self.time_col[1]])
+                self.logger.info(f"将{product}的时间列{self.time_col[1]}转换为datetime格式")
+            except:
+                self.logger.error(f"将{product}的时间列{self.time_col[1]}转换为datetime格式失败")
+                raise TypeError(f"无法将{product}的{self.time_col[1]}转换为datetime格式")
         self.data[product] = df.reset_index().set_index(self.time_col)
         self.logger.info(f"将{product}的索引设置为{self.time_col}")
+        self.data_freq[product] = pd.Series(self.data[product].index.get_level_values(self.time_col_num - 1).sort_values().diff().dropna()).mode()[0]
         self.products.append(product)
 
     def calc_interval_return(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
