@@ -173,11 +173,16 @@ class FactorTester:
             if len(freq_series) > 0:
                 if len(freq_series.index) > 1:
                     all_freqs[product_name] = pd.Series(freq_series.index.get_level_values(self.time_col_num - 1).sort_values().diff().dropna()).mode()[0]
+                    self.logger.info(f"产品 {product_name} 的频率为 {all_freqs[product_name]}")
+                else:
+                    self.logger.warning(f"产品 {product_name} 因子 {name} 只有一个数据点，无法确定频率。")
+            else:
+                self.logger.warning(f"产品 {product_name} 因子 {name} 没有数据。")
         if all_freqs:
             self.factor_freq[name] = pd.Series(all_freqs.values()).mode()[0]
             for product_name in all_freqs:
                 if all_freqs[product_name] != self.factor_freq[name]:
-                    self.logger.warning(f"合约 {product_name} 的因子频率 {all_freqs[product_name]} 与整体因子频率 {self.factor_freq[name]} 不符。")
+                    self.logger.warning(f"产品 {product_name} 的因子 {name} 频率 {all_freqs[product_name]} 与整体因子频率 {self.factor_freq[name]} 不符。")
             return self.factor_freq[name]
         else:
             return None
