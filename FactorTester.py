@@ -39,6 +39,7 @@ class FactorTester:
         self.products = []
         self.data = {}
         self.data_freq = {}
+        self.factor_data = {}
         self.factor_freq = {}
         self.product_mapping = {}
         for path in file_paths:
@@ -162,56 +163,6 @@ class FactorTester:
             daily_returns[c] = daily_return(df, price_col=price_col, 
                                             open_market=open_market, close_market=close_market)
         return pd.DataFrame(daily_returns)
-    
-    def calc_factor_freq(self, data: pd.DataFrame, name: Optional[str] = None) -> Optional[pd.Timedelta]:
-        if name is None:
-            name = 'Factor_' + str(len(self.factor_freq))
-        all_freqs = {}
-        for product_name in data.columns:
-            assert product_name in self.product_mapping
-            freq_series = data[product_name]
-            if len(freq_series) > 0:
-                if len(freq_series.index) > 1:
-                    all_freqs[product_name] = pd.Series(freq_series.index.get_level_values(self.time_col_num - 1).sort_values().diff().dropna()).mode()[0]
-                    self.logger.info(f"产品 {product_name} 的频率为 {all_freqs[product_name]}")
-                else:
-                    self.logger.warning(f"产品 {product_name} 因子 {name} 只有一个数据点，无法确定频率。")
-            else:
-                self.logger.warning(f"产品 {product_name} 因子 {name} 没有数据。")
-        if all_freqs:
-            self.factor_freq[name] = pd.Series(all_freqs.values()).mode()[0]
-            for product_name in all_freqs:
-                if all_freqs[product_name] != self.factor_freq[name]:
-                    self.logger.warning(f"产品 {product_name} 的因子 {name} 频率 {all_freqs[product_name]} 与整体因子频率 {self.factor_freq[name]} 不符。")
-            return self.factor_freq[name]
-        else:
-            return None
-
-    def calc_frequency(self, data: pd.DataFrame) -> Optional[pd.Timedelta]:
-        """
-        计算DataFrame的时间频率（最常见的时间差）。
-
-        参数:
-            data: DataFrame，索引为datetime（或字符串），列名为合约名称
-        
-        返回:
-            Optional[pd.Timedelta]: 时间频率，如果没有，则返回None
-        """
-        all_freqs = []
-        for col_name in data.columns:
-            freq_series = data[col_name]
-            if len(freq_series) > 0:
-                if len(freq_series.index) > 1:
-                    time_diffs = pd.to_datetime(freq_series.index).copy().to_series().diff().dropna()
-                    if len(time_diffs) > 0:
-                        min_diff = time_diffs.min()
-                        all_freqs.append(min_diff)
-        if all_freqs:
-            freq_counter = Counter(all_freqs)
-            most_common_freq = freq_counter.most_common(1)[0][0]
-            return most_common_freq
-        else:
-            return None
 
     def calc_return(self, price_col: str = 'close_price', calc_frequency: Optional[pd.Timedelta] = None,
                     time_cols: Optional[str|List[str]] = ['trading_day', 'trade_time'], 
@@ -339,7 +290,44 @@ class FactorTester:
         returns_df.index = returns_df.index.astype(str)
         return returns_df
 
-    def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series], 
+    def calc_factor_freq(self, data: pd.DataFrame, name: Optional[str] = None) -> Optional[pd.Timedelta]:
+        
+        if name is None:
+            name = 'Factor_' + str(len(self.factor_freq))
+
+        all_freqs = {}
+
+        if isinstance(data.index, pd.MultiIndex):
+            # 确保第一层是date，第二层是datetime
+            data.index = pd.MultiIndex.from_arrays([
+                pd.to_datetime(data.index.get_level_values(0)).date,
+                pd.to_datetime(data.index.get_level_values(1))
+            ])
+        elif not isinstance(data.index, pd.DatetimeIndex):
+            data = data.copy() # TO BE DELETED
+            data.index = pd.to_datetime(data.index)
+
+        for product_name in data.columns:
+            assert product_name in self.products
+            freq_series = data[product_name]
+            if len(freq_series) > 0:
+                if len(freq_series.index) > 1:
+                    all_freqs[product_name] = pd.Series(freq_series.index.get_level_values(len(freq_series.index.names) - 1).sort_values().diff().dropna()).mode()[0]
+                    self.logger.info(f"产品 {product_name} 的频率为 {all_freqs[product_name]}")
+                else:
+                    self.logger.warning(f"产品 {product_name} 因子 {name} 只有一个数据点，无法确定频率。")
+            else:
+                self.logger.warning(f"产品 {product_name} 因子 {name} 没有数据。")
+        if all_freqs:
+            self.factor_freq[name] = pd.Series(all_freqs.values()).mode()[0]
+            for product_name in all_freqs:
+                if all_freqs[product_name] != self.factor_freq[name]:
+                    self.logger.warning(f"产品 {product_name} 的因子 {name} 频率 {all_freqs[product_name]} 与整体因子频率 {self.factor_freq[name]} 不符。")
+            return self.factor_freq[name]
+        else:
+            return None
+        
+    def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series],  factor_name: Optional[str] = None,
                     set_freq: bool = True, frequency: Optional[pd.Timedelta] = None) -> pd.DataFrame:
         """
         将因子函数应用于每个合约的DataFrame。
@@ -357,20 +345,16 @@ class FactorTester:
         for c, df in self.data.items():
             factors[c] = factor_func(df)
         factors_df = pd.DataFrame(factors)
+        factor_name = 'Factor_' + str(len(self.factor_data)) if factor_name is None else factor_name
+        self.factor_data[factor_name] = factors_df
 
         if set_freq:
             # 如果因子频率未指定，则尝试从数据中获取
             if factors and frequency is None:
-                self.factor_frequency = self.calc_frequency(factors_df)
+                self.factor_frequency = self.calc_factor_freq(data=factors_df, name=factor_name)
+                # self.factor_frequency = self.calc_frequency(factors_df)
             else:
                 self.factor_frequency = frequency
-
-            # # 判断第几行开始的因子值不是nan，打印合约名字、index日期、因子值
-            # for contract, first_idx in factors_df.apply(lambda col: col.first_valid_index(), axis=0).items():
-            #     if first_idx is not None:
-            #         first_non_nan_value = factors_df.loc[first_idx][contract]
-            #         print(f"Contract: {contract}, First non-NaN index: {first_idx}, Value: {first_non_nan_value}")
-
             # 获取第一个因子的时间戳
             if not factors_df.empty:
                 self.first_factor_timestamp = factors_df.index[0]
