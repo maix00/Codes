@@ -373,7 +373,7 @@ class FactorTester:
         return df.rank(axis=1, method='average', na_option='keep', pct=True)
 
     def calc_ic(self, factor_name: str, 
-                factor_df: pd.DataFrame, return_df: pd.DataFrame, 
+                return_df: pd.DataFrame, 
                 return_freq: Optional[str|pd.Timedelta] = None,
                 start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.Series, pd.DataFrame]:
         """
@@ -382,6 +382,7 @@ class FactorTester:
         Also return IC stats and average contract coverage (mean non-NaN count per datetime).
         end_date: str or None, e.g. '2023-12-31'. If provided, only datetimes <= end_date are used.
         """
+        factor_df = self.factor_data[factor_name]
         factor_rank = self.calc_rank(factor_df)
         return_rank = self.calc_rank(return_df)
         dt_index = factor_rank.index.intersection(return_rank.index)
@@ -537,25 +538,6 @@ class FactorTester:
             plt.show()
 
         return groups, open_returns_groups
-    
-# Example usage:
-if __name__ == '__main__':
-    parquet_dir = '../data/main_mink/'
-    file_list = [
-        os.path.join(parquet_dir, f)
-        for f in os.listdir(parquet_dir)
-        if f.endswith('.parquet') and '_S' not in f and '-S' not in f
-    ]
-    tester = FactorTester(file_list, end_date='2025-05-31', futures_flag=True, futures_adjust_col=['close_price'])
-    returns = tester.calc_interval_return(interval=1)
-    factor = tester.calc_factor(lambda df: df['close_price_adjusted'].rolling(5).mean())
-    print(factor)
-    ic_series, stats = tester.calc_ic(factor, returns)
-    # with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-    #     print(ic_series)
-    print('rolloing_close\n', stats)
-    # groups = tester.group_five_classes(factor)
-    # print(groups['top'][:5])  # print top group for first 5 datetimes
 
 def daily_return(df, price_col: str = 'close_price', open_market: bool = False, close_market: bool = False) -> pd.Series:
     # if 'trading_day' not in df.columns:
@@ -594,8 +576,9 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
     daily_returns = tester.calc_return(price_col='open_price_adjusted', open_market=True, delta_return=True)
     assert daily_returns is not None
 
-    ic_series, stats = tester.calc_ic(factor_series, daily_returns)
-    print(factor_func.__name__, 'IC Stats:\n', stats.T)
+    factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
+    ic_series, stats = tester.calc_ic(factor_name, daily_returns)
+    print(factor_name, 'IC Stats:\n', stats.T)
     groups, open_returns_groups = tester.group_classes(factor_series, 
                                                        plot_flag=True, 
                                                        n_groups=n_groups, 
