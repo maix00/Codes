@@ -372,44 +372,50 @@ class FactorTester:
         """
         return df.rank(axis=1, method='average', na_option='keep', pct=True)
 
-    def calc_ic(self, factor_name: str, 
+    def calc_ic(self, factor_names: str|List[str], 
                 return_df: pd.DataFrame, 
                 return_freq: Optional[str|pd.Timedelta] = None,
-                start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.Series, pd.DataFrame]:
+                start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
         Calculate IC (Spearman correlation) between factor and future returns for each datetime.
         All calculations stop before end_date (inclusive).
         Also return IC stats and average contract coverage (mean non-NaN count per datetime).
         end_date: str or None, e.g. '2023-12-31'. If provided, only datetimes <= end_date are used.
         """
-        factor_df = self.factor_data[factor_name]
-        factor_rank = self.calc_rank(factor_df)
-        return_rank = self.calc_rank(return_df)
-        dt_index = factor_rank.index.intersection(return_rank.index)
-        start_date = start_date if start_date is not None else self.start_date
-        end_date = end_date if end_date is not None else self.end_date
-        if start_date is not None:
-            dt_index = dt_index[dt_index >= start_date]
-        if end_date is not None:
-            dt_index = dt_index[dt_index <= end_date]
-        ic = []
-        coverage = []
-        for dt in dt_index:
-            f = factor_rank.loc[dt]
-            r = return_rank.loc[dt]
-            valid = f.notna() & r.notna()
-            coverage.append(valid.sum())
-            if valid.sum() > 1:
-                ic.append(pd.Series(f[valid]).corr(r[valid], method='spearman'))
-            else:
-                ic.append(np.nan)
-        ic_series = pd.Series(ic, index=dt_index)
-        avg_coverage = np.mean(coverage)
-        stats_df = self.ic_stats(ic_series)
-        stats_df['avg_coverage'] = avg_coverage
-        return ic_series, stats_df
+        if isinstance(factor_names, str):
+            factor_names = [factor_names]
+        ic_series = {}
+        ic_stats = {}
+        for factor_name in factor_names:
+            factor_rank = self.calc_rank(self.factor_data[factor_name])
+            # return_df = 
+            return_rank = self.calc_rank(return_df)
+            dt_index = factor_rank.index.intersection(return_rank.index)
+            start_date = start_date if start_date is not None else self.start_date
+            end_date = end_date if end_date is not None else self.end_date
+            if start_date is not None:
+                dt_index = dt_index[dt_index >= start_date]
+            if end_date is not None:
+                dt_index = dt_index[dt_index <= end_date]
+            ic = []
+            coverage = []
+            for dt in dt_index:
+                f = factor_rank.loc[dt]
+                r = return_rank.loc[dt]
+                valid = f.notna() & r.notna()
+                coverage.append(valid.sum())
+                if valid.sum() > 1:
+                    ic.append(pd.Series(f[valid]).corr(r[valid], method='spearman'))
+                else:
+                    ic.append(np.nan)
+            ic_series[factor_name] = pd.Series(ic, index=dt_index)
+            avg_coverage = np.mean(coverage)
+            stats_df = self.ic_stats(ic_series[factor_name])
+            stats_df['avg_coverage'] = avg_coverage
+            ic_stats[factor_name] = stats_df
+        return pd.DataFrame(ic_series), pd.DataFrame(ic_stats)
 
-    def ic_stats(self, ic_series: pd.Series) -> pd.DataFrame:
+    def ic_stats(self, ic_series: pd.Series) -> pd.Series:
         """
         Calculate mean, std, IR of IC series.
         """
@@ -420,13 +426,13 @@ class FactorTester:
         max_ic = ic_series.max()
         min_ic = ic_series.min()
         # Return as DataFrame
-        stats_df = pd.DataFrame({
-            'mean': [mean],
-            'std': [std],
-            'IR': [ir],
-            't_stat': [t_stat],
-            'max': [max_ic],
-            'min': [min_ic]
+        stats_df = pd.Series({
+            'mean': mean,
+            'std': std,
+            'IR': ir,
+            't_stat': t_stat,
+            'max': max_ic,
+            'min': min_ic
         })
         return stats_df
 
@@ -578,7 +584,7 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
 
     factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
     ic_series, stats = tester.calc_ic(factor_name, daily_returns)
-    print(factor_name, 'IC Stats:\n', stats.T)
+    print(factor_name, 'IC Stats:\n', stats)
     groups, open_returns_groups = tester.group_classes(factor_series, 
                                                        plot_flag=True, 
                                                        n_groups=n_groups, 
