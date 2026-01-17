@@ -8,12 +8,14 @@ from Products import Futures, FuturesContract, ProductBase
 from collections import Counter
 import logging
 
+logger_dir_path_default = '../data/factor_tester_log/'
+
 class FactorTester:
     def __init__(self, file_paths: List[str], 
                  start_date: Optional[str] = None, end_date: Optional[str] = None,
                  time_col: str|List[str] = ['trading_day', 'trade_time'], #'trade_time',#['trading_day', 'trade_time'], 
                  futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None,
-                 logger_file: bool = True, logger_dir_path: str = '../data/factor_tester_log/',
+                 logger_file: bool = True, logger_dir_path: str = logger_dir_path_default,
                  logger_console: bool = False):
         
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -51,10 +53,6 @@ class FactorTester:
         self.end_date = end_date
         self.futures_flag = futures_flag
         self.futures_adjust_col = futures_adjust_col
-        self.factor_frequency: Optional[pd.Timedelta] = None
-        self.data_frequency: Optional[pd.Timedelta] = next(iter(self.data_freq.values())) if self.data_freq else None
-        assert self.data_frequency is not None, "无法计算数据的时间频率。"
-        self.first_factor_timestamp: Optional[pd.Timestamp] = None
         self.logger.info(f"FactorTester initialized with {len(self.products)} products")
 
     def set_time_col(self, time_col: str|List[str]):
@@ -174,25 +172,22 @@ class FactorTester:
         
         assert not (delta_return and log_return), "`delta_return`和`log_return`不能同时为True。"
 
+        factor_frequency = pd.Series(self.factor_freq.values()).unique()
+        factor_frequency = factor_frequency[0] if len(factor_frequency) == 1 else None
+        assert factor_frequency is None or isinstance(factor_frequency, pd.Timedelta)
+        data_frequency = pd.Series(self.data_freq.values()).unique()
+        data_frequency = data_frequency[0] if len(data_frequency) == 1 else None
+        assert data_frequency is None or isinstance(data_frequency, pd.Timedelta)
+
         if calc_freq is None:
-            if self.factor_frequency is not None:
-                calc_freq = self.factor_frequency
-            else:
-                calc_freq = self.data_frequency
-        else:
-            if isinstance(calc_freq, str):
-                calc_freq = pd.Timedelta(calc_freq)
-        assert calc_freq is not None, "`calc_freq`不能是None。无法计算因子频率。"
+            calc_freq = factor_frequency if factor_frequency is not None else data_frequency
+        elif isinstance(calc_freq, str):
+            calc_freq = pd.Timedelta(calc_freq)
         
         if return_freq is None:
-            if self.factor_frequency is not None:
-                return_freq = self.factor_frequency
-            else:
-                return_freq = self.data_frequency
-        else:
-            if isinstance(return_freq, str):
-                return_freq = pd.Timedelta(return_freq)
-        assert return_freq is not None, "`return_freq`不能是None。无法计算因子频率。"
+            return_freq = factor_frequency if factor_frequency is not None else data_frequency
+        elif isinstance(return_freq, str):
+            return_freq = pd.Timedelta(return_freq)
 
         if return_freq == pd.Timedelta('1 day') and calc_freq == pd.Timedelta('1 day') and\
             date_index and (open_market or close_market):
@@ -204,10 +199,9 @@ class FactorTester:
                 returns_df = pd.DataFrame(np.log(returns_df))
             return returns_df
         
-        if self.data_frequency is not None and\
-            calc_freq == self.data_frequency and\
-            return_freq.total_seconds() % self.data_frequency.total_seconds() == 0:
-            interval = int(return_freq / self.data_frequency)
+        if data_frequency is not None and calc_freq is not None and calc_freq == data_frequency and\
+            return_freq is not None and return_freq.total_seconds() % data_frequency.total_seconds() == 0:
+            interval = int(return_freq / data_frequency)
             returns_df = self.calc_interval_return(interval=interval, price_col=price_col)
             if not delta_return:
                 returns_df = returns_df + 1
@@ -217,9 +211,12 @@ class FactorTester:
 
         returns_all = {}
     
-        for product_name, df in self.data.items():
+        for product, df in self.data.items():
             if price_col not in df.columns:
-                raise ValueError(f"DataFrame {product_name} 中缺少列 {price_col}")
+                raise ValueError(f"DataFrame {product} 中缺少列 {price_col}")
+            
+            calc_freq = calc_freq if calc_freq is not None else self.data_freq[product]
+            return_freq = return_freq if return_freq is not None else self.data_freq[product]
             
             temp_df = df.copy()
             if time_cols:
@@ -283,7 +280,7 @@ class FactorTester:
             elif log_return:
                 final_series = np.log(final_series)
                 
-            returns_all[product_name] = final_series
+            returns_all[product] = final_series
 
         returns_df = pd.DataFrame(returns_all)
         return returns_df
@@ -348,9 +345,9 @@ class FactorTester:
         if set_freq:
             # 如果因子频率未指定，则尝试从数据中获取
             if factors and frequency is None:
-                self.factor_frequency = self.calc_factor_freq(data=factors_df, name=factor_name)
+                self.calc_factor_freq(data=factors_df, name=factor_name)
             else:
-                self.factor_frequency = frequency
+                self.factor_freq[factor_name] = frequency
             # 获取第一个因子的时间戳
             if not factors_df.empty:
                 self.first_factor_timestamp = factors_df.index[0]
