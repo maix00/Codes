@@ -545,17 +545,14 @@ class FactorTester:
         return groups, open_returns_groups
 
 def daily_return(df, price_col: str = 'close_price', open_market: bool = False, close_market: bool = False) -> pd.Series:
-    # if 'trading_day' not in df.columns:
-    #     raise ValueError("DataFrame must contain 'trading_day' column for daily grouping.")
     daily_price = df.groupby('trading_day')[price_col]
-    assert open_market or close_market, "At least one of open_market or close_market must be True."
-    assert not (open_market and close_market), "Only one of open_market or close_market can be True."
+    assert (open_market or close_market) and not (open_market and close_market)
     if open_market:
         return daily_price.first().pct_change().shift(-1)
     elif close_market:
         return daily_price.last().pct_change()
     else:
-        raise ValueError("Invalid combination of open_market and close_market arguments.")
+        raise ValueError("`open_market`和`close_market`有且只有一个为True。")
 
 def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] = None,
                              n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
