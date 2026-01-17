@@ -164,31 +164,31 @@ class FactorTester:
                                             open_market=open_market, close_market=close_market)
         return pd.DataFrame(daily_returns)
 
-    def calc_return(self, price_col: str = 'close_price', calc_frequency: Optional[pd.Timedelta] = None,
+    def calc_return(self, price_col: str = 'close_price', calc_freq: Optional[pd.Timedelta] = None,
                     time_cols: Optional[str|List[str]] = ['trading_day', 'trade_time'], 
                     first_timestamp: Optional[pd.Timestamp] = None, 
-                    return_frequency: Optional[pd.Timedelta] = None, 
+                    return_freq: Optional[pd.Timedelta] = None, 
                     delta_return: bool = False, log_return: bool = False,
                     open_market: bool = False, close_market: bool = False) -> pd.DataFrame:
         
         assert not (delta_return and log_return), "`delta_return`和`log_return`不能同时为True。"
 
-        if calc_frequency is None:
+        if calc_freq is None:
             if self.factor_frequency is not None:
-                calc_frequency = self.factor_frequency
+                calc_freq = self.factor_frequency
             else:
-                calc_frequency = self.data_frequency
-        assert calc_frequency is not None, "`calc_frequency`不能是None。无法计算因子频率。"
+                calc_freq = self.data_frequency
+        assert calc_freq is not None, "`calc_freq`不能是None。无法计算因子频率。"
         
-        if return_frequency is None:
+        if return_freq is None:
             if self.factor_frequency is not None:
-                return_frequency = self.factor_frequency
+                return_freq = self.factor_frequency
             else:
-                return_frequency = self.data_frequency
-        assert return_frequency is not None, "`return_frequency`不能是None。无法计算因子频率。"
+                return_freq = self.data_frequency
+        assert return_freq is not None, "`return_freq`不能是None。无法计算因子频率。"
 
         # BUT WHAT ABOUT FIRST_TIMESTAMP?
-        if return_frequency == pd.Timedelta('1 day') and calc_frequency == pd.Timedelta('1 day'):
+        if return_freq == pd.Timedelta('1 day') and calc_freq == pd.Timedelta('1 day'):
             assert not (open_market and close_market), "`open_market`和`close_market`不能同时为True。" 
             returns_df = self.calc_daily_return(price_col=price_col, open_market=open_market, close_market=close_market)
             if not delta_return:
@@ -198,9 +198,9 @@ class FactorTester:
             return returns_df
         
         if self.data_frequency is not None and\
-            calc_frequency == self.data_frequency and\
-            return_frequency.total_seconds() % self.data_frequency.total_seconds() == 0:
-            interval = int(return_frequency / self.data_frequency)
+            calc_freq == self.data_frequency and\
+            return_freq.total_seconds() % self.data_frequency.total_seconds() == 0:
+            interval = int(return_freq / self.data_frequency)
             returns_df = self.calc_interval_return(interval=interval, price_col=price_col)
             if not delta_return:
                 returns_df = returns_df + 1
@@ -234,19 +234,19 @@ class FactorTester:
             all_dates = temp_df.index.get_level_values(0)
             indices_of_next_row_changed = np.where(all_dates[:-1] != all_dates[1:])[0]
             indices_market = indices_of_next_row_changed if close_market else indices_of_next_row_changed + 1 if open_market else None
-            calc_step = int(calc_frequency / pd.Timedelta('1 day'))
-            return_step = int(return_frequency / pd.Timedelta('1 day'))
+            calc_step = int(calc_freq / pd.Timedelta('1 day'))
+            return_step = int(return_freq / pd.Timedelta('1 day'))
             all_datetimes = temp_df.index.get_level_values(1)
 
-            if calc_frequency:
-                if calc_frequency.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and (open_market or close_market):
+            if calc_freq:
+                if calc_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and (open_market or close_market):
                     assert indices_market is not None
                     start_datetimes = all_datetimes[0:1].append(all_datetimes[indices_market[calc_step-1::calc_step]])
                 else:
-                    last_t = all_datetimes[0] - calc_frequency # 保证第一个点被选中
+                    last_t = all_datetimes[0] - calc_freq # 保证第一个点被选中
                     keep_indices = []
                     for i, t in enumerate(all_datetimes):
-                        if t >= last_t + calc_frequency:
+                        if t >= last_t + calc_freq:
                             keep_indices.append(i)
                             last_t = t
                     start_datetimes = all_datetimes[np.array(keep_indices)]
@@ -255,15 +255,15 @@ class FactorTester:
             start_prices = temp_series.reindex(start_datetimes)
             assert len(start_prices) == len(start_datetimes), "start_prices 和 start_datetimes 长度不一致。"
 
-            if return_frequency is not None and\
-                return_frequency.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and (open_market or close_market):
+            if return_freq is not None and\
+                return_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and (open_market or close_market):
                     assert indices_market is not None
                     end_datetimes = all_datetimes[indices_market[return_step-1::calc_step]]
                     len_diff = len(start_datetimes) - len(end_datetimes)
                     assert len_diff >= 0, "start_datetimes 长度不得比 end_datetimes 短。"
-                    end_datetimes = end_datetimes.append(all_datetimes[indices_market[-len_diff:]] + return_frequency)
+                    end_datetimes = end_datetimes.append(all_datetimes[indices_market[-len_diff:]] + return_freq)
             else:
-                end_datetimes = start_datetimes + return_frequency
+                end_datetimes = start_datetimes + return_freq
 
             assert len(start_datetimes) == len(end_datetimes), "start_datetimes 和 end_datetimes 长度不一致。"
             
@@ -298,13 +298,12 @@ class FactorTester:
         all_freqs = {}
 
         if isinstance(data.index, pd.MultiIndex):
-            # 确保第一层是date，第二层是datetime
+            # 确保第一层是datetime(date)，第二层是datetime
             data.index = pd.MultiIndex.from_arrays([
-                pd.to_datetime(data.index.get_level_values(0)).date,
+                pd.to_datetime(data.index.get_level_values(0)),
                 pd.to_datetime(data.index.get_level_values(1))
             ])
         elif not isinstance(data.index, pd.DatetimeIndex):
-            data = data.copy() # TO BE DELETED
             data.index = pd.to_datetime(data.index)
 
         for product_name in data.columns:
@@ -313,7 +312,7 @@ class FactorTester:
             if len(freq_series) > 0:
                 if len(freq_series.index) > 1:
                     all_freqs[product_name] = pd.Series(freq_series.index.get_level_values(len(freq_series.index.names) - 1).sort_values().diff().dropna()).mode()[0]
-                    self.logger.info(f"产品 {product_name} 的频率为 {all_freqs[product_name]}")
+                    self.logger.info(f"产品 {product_name} 的因子 {name} 频率为 {all_freqs[product_name]}")
                 else:
                     self.logger.warning(f"产品 {product_name} 因子 {name} 只有一个数据点，无法确定频率。")
             else:
@@ -327,7 +326,7 @@ class FactorTester:
         else:
             return None
         
-    def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series],  factor_name: Optional[str] = None,
+    def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series], factor_name: Optional[str] = None,
                     set_freq: bool = True, frequency: Optional[pd.Timedelta] = None) -> pd.DataFrame:
         """
         将因子函数应用于每个合约的DataFrame。
@@ -366,7 +365,9 @@ class FactorTester:
         """
         return df.rank(axis=1, method='average', na_option='keep', pct=True)
 
-    def calc_ic(self, factor_df: pd.DataFrame, return_df: pd.DataFrame, 
+    def calc_ic(self, factor_name: str, 
+                factor_df: pd.DataFrame, return_df: pd.DataFrame, 
+                return_freq: Optional[str|pd.Timedelta] = None,
                 start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.Series, pd.DataFrame]:
         """
         Calculate IC (Spearman correlation) between factor and future returns for each datetime.
