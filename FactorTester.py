@@ -35,7 +35,7 @@ class FactorTester:
                 file_handler.setFormatter(formatter)
                 self.logger.addHandler(file_handler)
         
-        self.time_col = time_col
+        self.set_time_col(time_col)
         self.products = []
         self.data = {}
         for path in file_paths:
@@ -51,6 +51,23 @@ class FactorTester:
         assert self.data_frequency is not None, "无法计算数据的时间频率。"
         self.first_factor_timestamp: Optional[pd.Timestamp] = None
         self.logger.info(f"FactorTester initialized with {len(self.products)} products")
+
+    def set_time_col(self, time_col: str|List[str]):
+        self.time_col = time_col
+        if isinstance(time_col, str):
+            self.time_col = [time_col]
+        if len(self.time_col) == 1:
+            self.logger.info(f"将`time_col`设置为单列: {self.time_col[0]}")
+        elif len(self.time_col) == 2:
+            self.logger.info(f"将`time_col`设置为双列: {self.time_col[0]} and {self.time_col[1]}")
+            self.logger.info("首列假定为`trading_day`，第二列假定为`trade_time`")
+        else:
+            raise ValueError("`time_col`必须是一个字符串或两个字符串：交易时间，或者交易日和交易时间的组合。")
+        if hasattr(self, "products"):
+            for product in self.products:
+                df = self.data[product]
+                self.data[product] = df.reset_index().set_index(self.time_col)
+                self.logger.info(f"将{product}的索引设置为{self.time_col}")
 
     def add_data(self, product: ProductBase, df: pd.DataFrame|str, futures_adjust_col: Optional[List[str]] = None):
         if isinstance(df, str):
