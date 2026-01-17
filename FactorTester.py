@@ -6,38 +6,20 @@ import os
 from BackTester import Futures, FuturesContract, ProductBase
 from collections import Counter
 
-
 class FactorTester:
     def __init__(self, file_paths: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None,
-                 time_col: str = 'trade_time',
-                 futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None):
-        """
-        file_paths: list of parquet file paths, each containing a time series for a future contract.
-        """
+                 time_col: str = 'trade_time', futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None):
         self.time_col = time_col
-        self.data = {}  # key: contract name, value: DataFrame
+        self.products = []
+        self.data = {}
         for path in file_paths:
-            df = pd.read_parquet(path)
-            if df.empty:
-                continue
-            # Assume each file has a 'trade_time' column and is sorted
-            contract = path.split('/')[-1].replace('.parquet', '')
-            self.data[contract] = df.set_index(self.time_col)
-        self.contracts = list(self.data.keys())
-        self.products = list(self.data.keys())
+            product_name = path.split('/')[-1].replace('.parquet', '')
+            product = Futures(product_name) if futures_flag else ProductBase(product_name)
+            self.add_data(product, path, futures_adjust_col=futures_adjust_col)
         self.start_date = start_date
         self.end_date = end_date
         self.futures_flag = futures_flag
         self.futures_adjust_col = futures_adjust_col
-        if self.futures_flag:
-            self.futures_adjust_col = futures_adjust_col if futures_adjust_col else ['close_price']
-            self.futures_adjust_col_adjusted = [col + '_adjusted' for col in self.futures_adjust_col]
-            for c, df in self.data.items():
-                if any(col not in df.columns for col in self.futures_adjust_col_adjusted):
-                    assert 'adjustment_mul' in df.columns
-                    assert 'adjustment_add' in df.columns
-                    for col, col_adj in zip(self.futures_adjust_col, self.futures_adjust_col_adjusted):
-                        df[col_adj] = df[col] * df['adjustment_mul'] + df['adjustment_add']
         self.factor_frequency: Optional[pd.Timedelta] = None
         self.data_frequency: Optional[pd.Timedelta] = self.calc_frequency(self.data[next(iter(self.data))])
         assert self.data_frequency is not None, "无法计算数据的时间频率。"
@@ -53,7 +35,9 @@ class FactorTester:
             elif df.endswith('.xlsx'):
                 df = pd.read_excel(df)
             else:
-                raise ValueError("不支持的数据格式。")
+                raise ValueError(f"不支持的数据格式：{df}")
+        if df.empty:
+            return
         if isinstance(product, Futures):
             futures_adjust_col = futures_adjust_col or self.futures_adjust_col
             if futures_adjust_col:
