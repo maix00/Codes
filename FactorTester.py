@@ -42,6 +42,7 @@ class FactorTester:
         self.factor_data = {}
         self.factor_freq = {}
         self.product_mapping = {}
+        self.return_data = {}
         for path in file_paths:
             product_name = path.split('/')[-1].replace('.parquet', '')
             product = Futures(product_name) if futures_flag else ProductBase(product_name)
@@ -164,9 +165,8 @@ class FactorTester:
                                             open_market=open_market, close_market=close_market)
         return pd.DataFrame(daily_returns)
 
-    def calc_return(self, price_col: str = 'close_price', 
+    def calc_return(self, price_col: str = 'close_price', date_index: bool = False, 
                     time_cols: Optional[str|List[str]] = ['trading_day', 'trade_time'], 
-                    first_timestamp: Optional[pd.Timestamp] = None,
                     calc_freq: Optional[str|pd.Timedelta] = None,
                     return_freq: Optional[str|pd.Timedelta] = None, 
                     delta_return: bool = False, log_return: bool = False,
@@ -194,8 +194,8 @@ class FactorTester:
                 return_freq = pd.Timedelta(return_freq)
         assert return_freq is not None, "`return_freq`不能是None。无法计算因子频率。"
 
-        # BUT WHAT ABOUT FIRST_TIMESTAMP?
-        if return_freq == pd.Timedelta('1 day') and calc_freq == pd.Timedelta('1 day'):
+        if return_freq == pd.Timedelta('1 day') and calc_freq == pd.Timedelta('1 day') and\
+            date_index and (open_market or close_market):
             assert not (open_market and close_market), "`open_market`和`close_market`不能同时为True。" 
             returns_df = self.calc_daily_return(price_col=price_col, open_market=open_market, close_market=close_market)
             if not delta_return:
@@ -216,11 +216,10 @@ class FactorTester:
             return returns_df
 
         returns_all = {}
-        first_timestamp = first_timestamp if first_timestamp is not None else self.first_factor_timestamp
     
-        for contract, df in self.data.items():
+        for product_name, df in self.data.items():
             if price_col not in df.columns:
-                raise ValueError(f"DataFrame {contract} 中缺少列 {price_col}")
+                raise ValueError(f"DataFrame {product_name} 中缺少列 {price_col}")
             
             temp_df = df.copy()
             if time_cols:
@@ -230,13 +229,6 @@ class FactorTester:
                 temp_df = temp_df.set_index(time_cols)
             temp_df = temp_df.sort_index()
             temp_series = temp_df[price_col].droplevel(0)
-            
-            is_date = False
-            if first_timestamp:
-                ts_start = pd.to_datetime(first_timestamp)
-                is_date = (':' not in str(first_timestamp)) and (' ' not in str(first_timestamp))
-                level = 0 if is_date else 1
-                temp_df = temp_df[temp_df.index.get_level_values(level) >= ts_start]
 
             all_dates = temp_df.index.get_level_values(0)
             indices_of_next_row_changed = np.where(all_dates[:-1] != all_dates[1:])[0]
@@ -279,7 +271,7 @@ class FactorTester:
             
             raw_return = end_prices.values / start_prices.values
 
-            if is_date:
+            if date_index:
                 index = temp_df.index[temp_df.index.get_level_values(1).isin(start_datetimes)].get_level_values(0)
                 assert len(index) == len(start_datetimes), "index 和 start_datetimes 长度不一致。"
                 final_series = pd.Series(raw_return, index=index)
@@ -291,10 +283,9 @@ class FactorTester:
             elif log_return:
                 final_series = np.log(final_series)
                 
-            returns_all[contract] = final_series
+            returns_all[product_name] = final_series
 
         returns_df = pd.DataFrame(returns_all)
-        # returns_df.index = returns_df.index.astype(str)
         return returns_df
 
     def calc_factor_freq(self, data: pd.DataFrame, name: Optional[str] = None) -> Optional[pd.Timedelta]:
@@ -373,7 +364,8 @@ class FactorTester:
         return df.rank(axis=1, method='average', na_option='keep', pct=True)
 
     def calc_ic(self, factor_names: str|List[str], 
-                return_df: pd.DataFrame, 
+                return_price_col: str = 'close_price_adjusted',
+                return_open_market: bool = False, return_close_market: bool = False,
                 return_freq: Optional[str|pd.Timedelta] = None,
                 start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -388,7 +380,19 @@ class FactorTester:
         ic_stats = {}
         for factor_name in factor_names:
             factor_rank = self.calc_rank(self.factor_data[factor_name])
-            # return_df = 
+            this_return_freq = return_freq if return_freq is not None else self.factor_freq[factor_name]
+            date_index = True if self.factor_freq[factor_name] == pd.Timedelta('1 day') else False
+            this_return_label = (this_return_freq, return_price_col, date_index, return_open_market, return_close_market)
+            if this_return_label in self.return_data and\
+                self.return_data[this_return_label].columns == self.products:
+                return_df = self.return_data[this_return_label]
+            else:
+                return_df = self.calc_return(price_col=return_price_col,
+                                             return_freq=this_return_freq,
+                                             date_index=date_index,
+                                             open_market=return_open_market, 
+                                             close_market=return_close_market)
+                self.return_data[this_return_label] = return_df
             return_rank = self.calc_rank(return_df)
             dt_index = factor_rank.index.intersection(return_rank.index)
             start_date = start_date if start_date is not None else self.start_date
@@ -427,12 +431,7 @@ class FactorTester:
         min_ic = ic_series.min()
         # Return as DataFrame
         stats_df = pd.Series({
-            'mean': mean,
-            'std': std,
-            'IR': ir,
-            't_stat': t_stat,
-            'max': max_ic,
-            'min': min_ic
+            'mean': mean, 'std': std, 'IR': ir, 't_stat': t_stat, 'max': max_ic, 'min': min_ic
         })
         return stats_df
 
@@ -577,14 +576,11 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
                       end_date='2025-05-30', 
                       futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
 
-    # Calculate inflection point factor for all contracts
     factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'), factor_name=factor_name)
-    daily_returns = tester.calc_return(price_col='open_price_adjusted', open_market=True, delta_return=True)
-    assert daily_returns is not None
-
     factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
-    ic_series, stats = tester.calc_ic(factor_name, daily_returns)
+    _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_open_market=True)
     print(factor_name, 'IC Stats:\n', stats)
+    
     groups, open_returns_groups = tester.group_classes(factor_series, 
                                                        plot_flag=True, 
                                                        n_groups=n_groups, 
