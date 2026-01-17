@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 import pandas as pd
 import numpy as np
@@ -5,10 +6,35 @@ from typing import Callable, List, Dict, Optional, Tuple
 import os
 from BackTester import Futures, FuturesContract, ProductBase
 from collections import Counter
+import logging
 
 class FactorTester:
-    def __init__(self, file_paths: List[str], start_date: Optional[str] = None, end_date: Optional[str] = None,
-                 time_col: str = 'trade_time', futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None):
+    def __init__(self, file_paths: List[str], 
+                 start_date: Optional[str] = None, end_date: Optional[str] = None,
+                 time_col: str|List[str] = 'trade_time',#['trading_day', 'trade_time'], 
+                 futures_flag: bool = True, futures_adjust_col: Optional[List[str]] = None,
+                 logger_file: bool = True, logger_dir_path: str = '../data/factor_tester_log/',
+                 logger_console: bool = False):
+        
+        self.logger = logging.getLogger(self.__class__.__name__)
+        if not self.logger.handlers:
+
+            self.logger.setLevel(logging.INFO)
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+            if logger_console:
+                console_handler = logging.StreamHandler()
+                console_handler.setFormatter(formatter)
+                self.logger.addHandler(console_handler)
+
+            if logger_file:
+                if not os.path.exists(logger_dir_path):
+                    os.makedirs(logger_dir_path)
+                logger_file_path = os.path.join(logger_dir_path, "factor_tester_{}.log".format(datetime.now().strftime("%Y%m%d")))
+                file_handler = logging.FileHandler(logger_file_path, encoding='utf-8')
+                file_handler.setFormatter(formatter)
+                self.logger.addHandler(file_handler)
+        
         self.time_col = time_col
         self.products = []
         self.data = {}
@@ -24,6 +50,7 @@ class FactorTester:
         self.data_frequency: Optional[pd.Timedelta] = self.calc_frequency(self.data[next(iter(self.data))])
         assert self.data_frequency is not None, "无法计算数据的时间频率。"
         self.first_factor_timestamp: Optional[pd.Timestamp] = None
+        self.logger.info(f"FactorTester initialized with {len(self.products)} products")
 
     def add_data(self, product: ProductBase, df: pd.DataFrame|str, futures_adjust_col: Optional[List[str]] = None):
         if isinstance(df, str):
@@ -51,12 +78,6 @@ class FactorTester:
         self.products.append(product)
 
     def calc_interval_return(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
-        """
-        Calculate returns for each contract.
-        interval: time interval for returns (in rows, e.g., 1 for next row)
-        price_col: column name for price
-        Returns: DataFrame, index: datetime, columns: contracts
-        """
         returns = {}
         for c, df in self.data.items():
             assert price_col in df.columns, f"{price_col} not in DataFrame columns for contract {c}"
@@ -65,11 +86,6 @@ class FactorTester:
     
     def calc_daily_return(self, price_col: str = 'open_price',
                           open_market: bool = False, close_market: bool = False) -> pd.DataFrame:
-        """
-        计算每个合约的每日收益率。
-        price_col: 价格列名
-        Returns: DataFrame，索引为datetime，列为合约名称
-        """
         daily_returns = {}
         for c, df in self.data.items():
             daily_returns[c] = daily_return(df, price_col=price_col, 
@@ -184,7 +200,6 @@ class FactorTester:
                 else:
                     last_t = all_datetimes[0] - calc_frequency # 保证第一个点被选中
                     keep_indices = []
-                    # 这个循环次数远少于原始代码，因为它只扫描时间轴一次
                     for i, t in enumerate(all_datetimes):
                         if t >= last_t + calc_frequency:
                             keep_indices.append(i)
