@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from typing import Callable, List, Dict, Optional, Tuple
 import os
-from BackTester import Futures, FuturesContract, ProductBase
+from Products import Futures, FuturesContract, ProductBase
 from collections import Counter
 import logging
 
@@ -580,7 +580,7 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
     factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_open_market=True)
     print(factor_name, 'IC Stats:\n', stats)
-    
+
     groups, open_returns_groups = tester.group_classes(factor_series, 
                                                        plot_flag=True, 
                                                        n_groups=n_groups, 
