@@ -358,9 +358,6 @@ class FactorTester:
         return factors_df
     
     def calc_rank(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Calculate cross-sectional rank for each datetime.
-        """
         return df.rank(axis=1, method='average', na_option='keep', pct=True)
 
     def calc_ic(self, factor_names: str|List[str], 
@@ -368,12 +365,6 @@ class FactorTester:
                 return_open_market: bool = False, return_close_market: bool = False,
                 return_freq: Optional[str|pd.Timedelta] = None,
                 start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Calculate IC (Spearman correlation) between factor and future returns for each datetime.
-        All calculations stop before end_date (inclusive).
-        Also return IC stats and average contract coverage (mean non-NaN count per datetime).
-        end_date: str or None, e.g. '2023-12-31'. If provided, only datetimes <= end_date are used.
-        """
         if isinstance(factor_names, str):
             factor_names = [factor_names]
         ic_series = {}
@@ -429,13 +420,12 @@ class FactorTester:
         t_stat = mean / (std / np.sqrt(len(ic_series.dropna()))) if std != 0 and len(ic_series.dropna()) > 1 else np.nan
         max_ic = ic_series.max()
         min_ic = ic_series.min()
-        # Return as DataFrame
         stats_df = pd.Series({
             'mean': mean, 'std': std, 'IR': ir, 't_stat': t_stat, 'max': max_ic, 'min': min_ic
         })
         return stats_df
 
-    def group_classes(self, factor_df: pd.DataFrame, n_groups: int = 5, plot_flag: bool = False, 
+    def group_classes(self, factor_name: str, n_groups: int = 5, plot_flag: bool = False, 
                       start_date: Optional[str] = None, end_date: Optional[str] = None,
                       plot_n_group_list: Optional[List[int]] = None) -> Tuple[Dict[str, Dict[str, List[ProductBase]]], Dict[str, Dict[str, float]]]:
         """
@@ -446,6 +436,9 @@ class FactorTester:
         # Calculate daily returns at next open
         assert 'open_price_adjusted' in next(iter(self.data.values())).columns, "DataFrames must contain 'open_price_adjusted' column."
         open_returns = self.calc_daily_return(price_col='open_price_adjusted', open_market=True)
+
+        assert factor_name in self.factor_data, "Factor name must be in factor_data."
+        factor_df = self.factor_data[factor_name]
 
         # Plot adjustment for group numbers
         plot_n_group_list = [n_groups + n_group if n_group < 0 else n_group for n_group in plot_n_group_list] if plot_n_group_list else None
@@ -573,12 +566,12 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
                       end_date='2025-05-30', 
                       futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
 
-    factor_series = tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'), factor_name=factor_name)
+    tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'), factor_name=factor_name)
     factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_open_market=True)
     print(factor_name, 'IC Stats:\n', stats)
 
-    groups, open_returns_groups = tester.group_classes(factor_series, 
+    groups, open_returns_groups = tester.group_classes(factor_name, 
                                                        plot_flag=True, 
                                                        n_groups=n_groups, 
                                                        plot_n_group_list=plot_n_group_list,
