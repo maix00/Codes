@@ -39,6 +39,8 @@ class FactorTester:
         self.products = []
         self.data = {}
         self.data_freq = {}
+        self.factor_freq = {}
+        self.product_mapping = {}
         for path in file_paths:
             product_name = path.split('/')[-1].replace('.parquet', '')
             product = Futures(product_name) if futures_flag else ProductBase(product_name)
@@ -144,6 +146,7 @@ class FactorTester:
         self.data_freq[product] = pd.Series(self.data[product].index.get_level_values(self.time_col_num - 1).sort_values().diff().dropna()).mode()[0]
         self.logger.info(f"{product}的数据频率为{self.data_freq[product]}")
         self.products.append(product)
+        self.product_mapping[product.name] = product
 
     def calc_interval_return(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
         returns = {}
@@ -160,8 +163,26 @@ class FactorTester:
                                             open_market=open_market, close_market=close_market)
         return pd.DataFrame(daily_returns)
     
-    @staticmethod
-    def calc_frequency(data: pd.DataFrame) -> Optional[pd.Timedelta]:
+    def calc_factor_freq(self, data: pd.DataFrame, name: Optional[str] = None) -> Optional[pd.Timedelta]:
+        if name is None:
+            name = 'Factor_' + str(len(self.factor_freq))
+        all_freqs = {}
+        for product_name in data.columns:
+            assert product_name in self.product_mapping
+            freq_series = data[product_name]
+            if len(freq_series) > 0:
+                if len(freq_series.index) > 1:
+                    all_freqs[product_name] = pd.Series(freq_series.index.get_level_values(self.time_col_num - 1).sort_values().diff().dropna()).mode()[0]
+        if all_freqs:
+            self.factor_freq[name] = pd.Series(all_freqs.values()).mode()[0]
+            for product_name in all_freqs:
+                if all_freqs[product_name] != self.factor_freq[name]:
+                    self.logger.warning(f"合约 {product_name} 的因子频率 {all_freqs[product_name]} 与整体因子频率 {self.factor_freq[name]} 不符。")
+            return self.factor_freq[name]
+        else:
+            return None
+
+    def calc_frequency(self, data: pd.DataFrame) -> Optional[pd.Timedelta]:
         """
         计算DataFrame的时间频率（最常见的时间差）。
 
