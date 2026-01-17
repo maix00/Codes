@@ -164,10 +164,11 @@ class FactorTester:
                                             open_market=open_market, close_market=close_market)
         return pd.DataFrame(daily_returns)
 
-    def calc_return(self, price_col: str = 'close_price', calc_freq: Optional[pd.Timedelta] = None,
+    def calc_return(self, price_col: str = 'close_price', 
                     time_cols: Optional[str|List[str]] = ['trading_day', 'trade_time'], 
-                    first_timestamp: Optional[pd.Timestamp] = None, 
-                    return_freq: Optional[pd.Timedelta] = None, 
+                    first_timestamp: Optional[pd.Timestamp] = None,
+                    calc_freq: Optional[str|pd.Timedelta] = None,
+                    return_freq: Optional[str|pd.Timedelta] = None, 
                     delta_return: bool = False, log_return: bool = False,
                     open_market: bool = False, close_market: bool = False) -> pd.DataFrame:
         
@@ -178,6 +179,9 @@ class FactorTester:
                 calc_freq = self.factor_frequency
             else:
                 calc_freq = self.data_frequency
+        else:
+            if isinstance(calc_freq, str):
+                calc_freq = pd.Timedelta(calc_freq)
         assert calc_freq is not None, "`calc_freq`不能是None。无法计算因子频率。"
         
         if return_freq is None:
@@ -185,6 +189,9 @@ class FactorTester:
                 return_freq = self.factor_frequency
             else:
                 return_freq = self.data_frequency
+        else:
+            if isinstance(return_freq, str):
+                return_freq = pd.Timedelta(return_freq)
         assert return_freq is not None, "`return_freq`不能是None。无法计算因子频率。"
 
         # BUT WHAT ABOUT FIRST_TIMESTAMP?
