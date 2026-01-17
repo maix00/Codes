@@ -94,10 +94,16 @@ class FactorTester:
             if futures_adjust_col:
                 futures_adjust_col_adjusted = [col + '_adjusted' for col in futures_adjust_col]
                 if any(col not in df.columns for col in futures_adjust_col_adjusted):
-                    assert 'adjustment_mul' in df.columns
-                    assert 'adjustment_add' in df.columns
+                    try:
+                        assert 'adjustment_mul' in df.columns
+                        assert 'adjustment_add' in df.columns
+                    except:
+                        message = f"{product}的数据中缺少调整列`adjustment_mul`和`adjustment_add`，无法进行价格调整。"
+                        self.logger.error(message)
+                        raise AssertionError(message)
                     for col, col_adj in zip(futures_adjust_col, futures_adjust_col_adjusted):
                         df[col_adj] = df[col] * df['adjustment_mul'] + df['adjustment_add']
+                        self.logger.info(f"{product}的`{col}`列已进行价格调整, 新列名为`{col_adj}`。")
         if self.time_col_num == 1:
             try:
                 assert self.time_col[0] in df.columns
@@ -136,6 +142,7 @@ class FactorTester:
         self.data[product] = df.reset_index().set_index(self.time_col)
         self.logger.info(f"将{product}的索引设置为{self.time_col}")
         self.data_freq[product] = pd.Series(self.data[product].index.get_level_values(self.time_col_num - 1).sort_values().diff().dropna()).mode()[0]
+        self.logger.info(f"{product}的数据频率为{self.data_freq[product]}")
         self.products.append(product)
 
     def calc_interval_return(self, interval: int = 1, price_col: str = 'close_price_adjusted') -> pd.DataFrame:
