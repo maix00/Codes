@@ -156,18 +156,26 @@ class FactorTester:
         return pd.DataFrame(returns)
     
     def calc_daily_return(self, price_col: str = 'open_price',
-                          open_market: bool = False, close_market: bool = False) -> pd.DataFrame:
+                          open_market: bool = False, close_market: bool = False,
+                          return_freq: pd.Timedelta|int = pd.Timedelta('1 day'),
+                          timedelta_offset: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None) -> pd.DataFrame:
         daily_returns = {}
         for c, df in self.data.items():
-            daily_returns[c] = daily_return(df, price_col=price_col, 
-                                            open_market=open_market, close_market=close_market)
+            data_freq = self.data_freq[c]
+            daily_return_c = daily_return(df, price_col=price_col, data_freq=data_freq,
+                                          open_market=open_market, close_market=close_market,
+                                          return_freq=return_freq, timedelta_offset=timedelta_offset)
+            if len(daily_return_c.index.names) == 2:
+                daily_return_c = daily_return_c.droplevel(1)
+            daily_returns[c] = daily_return_c
         return pd.DataFrame(daily_returns)
 
     def calc_return(self, price_col: str = 'close_price', date_index: bool = False, 
                     time_cols: Optional[str|List[str]] = ['trading_day', 'trade_time'], 
                     calc_freq: Optional[str|pd.Timedelta] = None, return_freq: Optional[str|pd.Timedelta] = None,
                     continuous_calc: bool = True, delta_return: bool = False, log_return: bool = False,
-                    open_market: bool = False, close_market: bool = False) -> tuple[pd.DataFrame, bool, bool]:
+                    open_market: bool = False, close_market: bool = False,
+                    timedelta_offset: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None) -> tuple[pd.DataFrame, bool, bool]:
         
         assert not (delta_return and log_return), "`delta_return`和`log_return`不能同时为True。"
         self.logger.info(f"是否计算百分比收益率: {delta_return}")
@@ -195,15 +203,28 @@ class FactorTester:
             return_freq = pd.Timedelta(return_freq)
         self.logger.info(f"收益率频率为: {return_freq}")
 
-        date_index = True if (open_market or close_market) else date_index
+        date_index = True if (open_market or close_market or timedelta_offset is not None) else date_index
         self.logger.info(f"收益率是否按日期而非时间索引: {date_index}")
 
-        if return_freq == pd.Timedelta('1 day') and calc_freq == pd.Timedelta('1 day') and\
-            (open_market or close_market) and not (open_market and close_market):
+        if return_freq is not None and return_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and\
+            calc_freq is not None and calc_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and\
+            (open_market or close_market or
+                (timedelta_offset is not None and 
+                 isinstance(timedelta_offset, str)
+                 or isinstance(timedelta_offset, pd.Timedelta)
+                 or (isinstance(timedelta_offset, list) and len(timedelta_offset) == 1))
+            ) and\
+            not (open_market and close_market) and\
+            not (open_market and timedelta_offset is not None) and\
+            not (close_market and timedelta_offset is not None):
             self.logger.info("收益率频率与计算频率均为一日, 且返回收益率序列要求以日期索引, 选择该日开盘或收盘作为计算点, 采用快速计算方式.")
             self.logger.info(f"是否选择开盘作为计算点: {open_market}")
             self.logger.info(f"是否选择收盘作为计算点: {close_market}")
-            returns_df = self.calc_daily_return(price_col=price_col, open_market=open_market, close_market=close_market)
+            self.logger.info(f"选择自开盘后或收盘前某个偏移量作为计算点: {timedelta_offset}")
+            returns_df = self.calc_daily_return(price_col=price_col, 
+                                                open_market=open_market, close_market=close_market, 
+                                                return_freq=return_freq, timedelta_offset=timedelta_offset)
+            print(returns_df)
             self.logger.info(f"计算完毕, 返回结果长度为 {len(returns_df)}, 起始索引为 {returns_df.index[0]}, 结束索引为 {returns_df.index[-1]}")
             if not delta_return:
                 returns_df = returns_df + 1
@@ -408,6 +429,7 @@ class FactorTester:
                 return_price_col: str = 'close_price_adjusted',
                 return_open_market: bool = False, return_close_market: bool = False,
                 return_freq: Optional[str|pd.Timedelta] = None,
+                return_timedelta_offset: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None,
                 start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
         if isinstance(factor_names, str):
             factor_names = [factor_names]
@@ -415,9 +437,9 @@ class FactorTester:
         ic_stats = {}
         for factor_name in factor_names:
             factor_rank = self.calc_rank(self.factor_data[factor_name])
-            return_df, delta_return, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col,
+            return_df, delta_return, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col, 
                                                                     open_market=return_open_market, close_market=return_close_market,
-                                                                    return_freq=return_freq)
+                                                                    return_freq=return_freq, timedelta_offset=return_timedelta_offset)
             return_rank = self.calc_rank(return_df)
             dt_index = factor_rank.index.intersection(return_rank.index)
             start_date = start_date if start_date is not None else self.start_date
@@ -458,33 +480,34 @@ class FactorTester:
     
     def cache_return(self, price_col: str = 'close_price_adjusted',
                      date_index: bool = False, open_market: bool = False, close_market: bool = False,
-                     return_freq: Optional[str|pd.Timedelta] = None,
+                     return_freq: Optional[str|pd.Timedelta] = None, timedelta_offset: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None,
                      calc_freq: Optional[str|pd.Timedelta] = None) -> tuple[pd.DataFrame, bool, bool]:
-        return_label = (return_freq, calc_freq, price_col, date_index, open_market, close_market)
+        return_label = (return_freq, calc_freq, price_col, date_index, open_market, close_market, timedelta_offset)
         if return_label in self.return_data and\
             set(self.return_data[return_label][0].columns) == self.products:
             return self.return_data[return_label]
         else:
-            outcome = self.calc_return(price_col=price_col, return_freq=return_freq, calc_freq=calc_freq,
+            outcome = self.calc_return(price_col=price_col, return_freq=return_freq, calc_freq=calc_freq, timedelta_offset=timedelta_offset,
                                        date_index=date_index, open_market=open_market, close_market=close_market)
             self.return_data[return_label] = outcome
             return outcome
         
     def cache_return_by_factor_name(self, factor_name: str, price_col: str = 'close_price_adjusted',
                      date_index: Optional[bool] = None, open_market: bool = False, close_market: bool = False,
-                     return_freq: Optional[str|pd.Timedelta] = None,
+                     return_freq: Optional[str|pd.Timedelta] = None, timedelta_offset: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None,
                      calc_freq: Optional[str|pd.Timedelta] = None) -> tuple[pd.DataFrame, bool, bool]:
         return_freq = return_freq if return_freq is not None else self.factor_freq[factor_name]
         calc_freq = calc_freq if calc_freq is not None else self.factor_freq[factor_name]
         date_index = date_index if date_index is not None else \
             True if self.factor_freq[factor_name] == pd.Timedelta('1 day') else False
-        return self.cache_return(price_col=price_col, date_index=date_index, open_market=open_market,
+        return self.cache_return(price_col=price_col, date_index=date_index, open_market=open_market, timedelta_offset=timedelta_offset,
                                  close_market=close_market, return_freq=return_freq, calc_freq=calc_freq)
 
     def group_classes(self, factor_name: str, n_groups: int = 5, plot_flag: bool = False, 
                       start_date: Optional[str] = None, end_date: Optional[str] = None,
                       return_price_col: str = 'close_price_adjusted',
                       return_open_market: bool = False, return_close_market: bool = False,
+                      return_timedelta_offset: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None,
                       return_freq: Optional[str|pd.Timedelta] = None,
                       plot_n_group_list: Optional[List[int]] = None) -> Tuple[Dict[str, Dict[str, List[ProductBase]]], Dict[str, Dict[str, float]]]:
         """
@@ -495,7 +518,7 @@ class FactorTester:
         # Calculate daily returns at next open
         returns, delta_return, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col,
                                                                     open_market=return_open_market, close_market=return_close_market,
-                                                                    return_freq=return_freq)
+                                                                    return_freq=return_freq, timedelta_offset=return_timedelta_offset)
 
         if not delta_return:
             returns = returns - 1
@@ -603,7 +626,7 @@ class FactorTester:
 def daily_return(df: pd.DataFrame, price_col: str = 'close_price', 
                  open_market: bool = False, close_market: bool = False, 
                  data_freq: Optional[pd.Timedelta] = None,
-                 timedelta_offset: Optional[pd.Timedelta|List[pd.Timedelta]] = None,
+                 timedelta_offset: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None,
                  return_freq: pd.Timedelta|int = pd.Timedelta('1 day')) -> pd.Series:
     daily_price = df.groupby('trading_day')[price_col]
     assert (open_market or close_market or timedelta_offset is not None) and\
@@ -612,10 +635,29 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
         not (close_market and timedelta_offset is not None)
     offset = None
     if timedelta_offset is not None:
-        if isinstance(timedelta_offset, pd.Timedelta):
+        if not isinstance(timedelta_offset, list):
             timedelta_offset = [timedelta_offset]
         assert data_freq is not None
-        offset = [int(to.total_seconds() / data_freq.total_seconds()) for to in timedelta_offset]
+        offset = []
+        for idx in range(len(timedelta_offset)):
+            to = timedelta_offset[idx]
+            if isinstance(to, str):
+                if to == 'open_market':
+                    off = 0
+                elif to == 'close_market':
+                    off = -1
+                else:
+                    try:
+                        to = pd.Timedelta(to)
+                    except:
+                        raise ValueError(f"无法将字符串{to}转换为pd.Timedelta")
+            if isinstance(to, pd.Timedelta):
+                off = int(to.total_seconds() / data_freq.total_seconds())
+                if off < 0:
+                    off = off - 1
+            else:
+                raise ValueError(f"Invalid timedelta_offset: {to}")
+            offset.append(off)
     if isinstance(return_freq, pd.Timedelta):
         assert return_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0
         return_freq = int(return_freq.total_seconds() / pd.Timedelta('1 day').total_seconds())
@@ -628,7 +670,6 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
         return daily_price.last().pct_change(periods=return_freq).shift(-return_freq)
     elif timedelta_offset is not None:
         assert offset is not None
-        print(daily_price.nth(offset))
         returns = daily_price.nth(offset).pct_change(periods=return_freq).shift(-return_freq)
         assert isinstance(returns, pd.Series)
         return returns
@@ -657,8 +698,9 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
     tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'), factor_name=factor_name)
     factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
     # tester.calc_return(return_freq = '40 minutes', calc_freq = '35 minutes')
-    # print(daily_return(tester.data[Futures('A.DCE')], price_col='close_price_adjusted', timedelta_offset=[pd.Timedelta('30 minutes'), pd.Timedelta('60 minutes')], data_freq=pd.Timedelta('1 minute')))
+    # print(daily_return(tester.data[Futures('A.DCE')], price_col='close_price_adjusted', timedelta_offset=[pd.Timedelta('30 minutes'), -pd.Timedelta('60 minutes')], data_freq=pd.Timedelta('1 minute')))
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_open_market=True)
+    _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_timedelta_offset='-1 minute')
     print(factor_name, 'IC Stats:\n', stats)
 
     groups, returns_groups = tester.group_classes(factor_name, 
