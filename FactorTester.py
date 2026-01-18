@@ -600,15 +600,40 @@ class FactorTester:
 
         return groups, returns_groups
 
-def daily_return(df: pd.DataFrame, price_col: str = 'close_price', open_market: bool = False, close_market: bool = False) -> pd.Series:
+def daily_return(df: pd.DataFrame, price_col: str = 'close_price', 
+                 open_market: bool = False, close_market: bool = False, 
+                 data_freq: Optional[pd.Timedelta] = None,
+                 timedelta_offset: Optional[pd.Timedelta|List[pd.Timedelta]] = None,
+                 return_freq: pd.Timedelta|int = pd.Timedelta('1 day')) -> pd.Series:
     daily_price = df.groupby('trading_day')[price_col]
-    assert (open_market or close_market) and not (open_market and close_market)
+    assert (open_market or close_market or timedelta_offset is not None) and\
+        not (open_market and close_market) and\
+        not (open_market and timedelta_offset is not None) and\
+        not (close_market and timedelta_offset is not None)
+    offset = None
+    if timedelta_offset is not None:
+        if isinstance(timedelta_offset, pd.Timedelta):
+            timedelta_offset = [timedelta_offset]
+        assert data_freq is not None
+        offset = [int(to.total_seconds() / data_freq.total_seconds()) for to in timedelta_offset]
+    if isinstance(return_freq, pd.Timedelta):
+        assert return_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0
+        return_freq = int(return_freq.total_seconds() / pd.Timedelta('1 day').total_seconds())
+        if timedelta_offset is not None:
+            return_freq = return_freq * len(timedelta_offset)
+    assert isinstance(return_freq, int) and return_freq > 0
     if open_market:
-        return daily_price.first().pct_change().shift(-1)
+        return daily_price.first().pct_change(periods=return_freq).shift(-return_freq)
     elif close_market:
-        return daily_price.last().pct_change()
+        return daily_price.last().pct_change(periods=return_freq).shift(-return_freq)
+    elif timedelta_offset is not None:
+        assert offset is not None
+        print(daily_price.nth(offset))
+        returns = daily_price.nth(offset).pct_change(periods=return_freq).shift(-return_freq)
+        assert isinstance(returns, pd.Series)
+        return returns
     else:
-        raise ValueError("`open_market`和`close_market`有且只有一个为True。")
+        raise AssertionError
 
 def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] = None,
                              n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
@@ -632,6 +657,7 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
     tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'), factor_name=factor_name)
     factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
     # tester.calc_return(return_freq = '40 minutes', calc_freq = '35 minutes')
+    # print(daily_return(tester.data[Futures('A.DCE')], price_col='close_price_adjusted', timedelta_offset=[pd.Timedelta('30 minutes'), pd.Timedelta('60 minutes')], data_freq=pd.Timedelta('1 minute')))
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_open_market=True)
     print(factor_name, 'IC Stats:\n', stats)
 
