@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+import itertools
 import pandas as pd
 import numpy as np
 from typing import Callable, List, Dict, Optional, Tuple
@@ -205,7 +206,7 @@ class FactorTester:
         if return_freq is not None and return_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and\
             calc_freq is not None and calc_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and\
             daily_anchors is not None:
-            self.logger.info("收益率频率与计算频率均为一日, 且返回收益率序列要求以日期索引, 选择该日开盘或收盘作为计算点, 采用快速计算方式.")
+            self.logger.info("收益率频率与计算频率均为一日的整数倍, 且选择距离该日开盘或收盘的固定时间点作为计算点, 采用快速计算方式.")
             self.logger.info(f"选择自开盘后或收盘前某个偏移量作为计算点: {daily_anchors}")
             returns_df = self.calc_daily_return(price_col=price_col, date_index=date_index,
                                                 return_freq=return_freq, daily_anchors=daily_anchors)
@@ -238,21 +239,18 @@ class FactorTester:
             return (returns_df, delta_return, log_return)
 
         returns_all = {}
-        open_market = True if daily_anchors == 'open_market' else False
-        close_market = True if daily_anchors == 'close_market' else False
     
         for product, df in self.data.items():
             if price_col not in df.columns:
                 raise ValueError(f"DataFrame {product} 中缺少列 {price_col}")
             
-            calc_freq = calc_freq if calc_freq is not None else self.data_freq[product]
+            data_freq = self.data_freq[product]
+
+            calc_freq = calc_freq if calc_freq is not None else data_freq
             assert isinstance(calc_freq, pd.Timedelta)
 
-            return_freq = return_freq if return_freq is not None else self.data_freq[product]
+            return_freq = return_freq if return_freq is not None else data_freq
             assert isinstance(return_freq, pd.Timedelta)
-
-            data_freq = self.data_freq[product]
-            offset = process_daily_anchors(data_freq=data_freq, daily_anchors=daily_anchors) if daily_anchors is not None else None
             
             if len(df.index.names) == 2:
                 pass
@@ -273,18 +271,27 @@ class FactorTester:
                 self.logger.error(message); raise AssertionError(message)
             temp_series = df[price_col].droplevel(0)
 
+            offset = process_daily_anchors(data_freq=data_freq, daily_anchors=daily_anchors) if daily_anchors is not None else None
+            num_offset_neg = len([1 for off in offset if off < 0]) if offset is not None else None
+
             all_dates = df.index.get_level_values(0)
-            indices_of_next_row_changed = np.where(all_dates[:-1] != all_dates[1:])[0]
-            indices_market = indices_of_next_row_changed if close_market else indices_of_next_row_changed + 1 if open_market else None
+            indices_of_next_row_changed = np.concatenate(([-1], np.where(all_dates[:-1] != all_dates[1:])[0]))
+            indices_market = sorted(itertools.chain.from_iterable([off + indices_of_next_row_changed + 1 for off in offset])) if offset is not None else None
             calc_step = int(calc_freq / pd.Timedelta('1 day'))
             return_step = int(return_freq / pd.Timedelta('1 day'))
             all_datetimes = df.index.get_level_values(1)
             self.logger.info(f"产品 {product} 计算收益率序列的起始时间共有 {len(all_datetimes)} 个时间点")
 
             if calc_freq:
-                if calc_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and (open_market or close_market):
+                if calc_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and offset is not None:
                     assert indices_market is not None
-                    keep_indices = [0] + indices_market[calc_step-1::calc_step]
+                    assert num_offset_neg is not None
+                    keep_indices = [
+                        indices_market[p + off]
+                        for p in range(0, len(indices_market), calc_step * len(offset))
+                        for off in range(len(offset))
+                        if p + off < len(indices_market) and p + off > num_offset_neg - 1
+                    ]
                     start_datetimes = all_datetimes[0:1].append(all_datetimes[indices_market[calc_step-1::calc_step]])
                     start_datetimes = all_datetimes[keep_indices]
                     self.logger.info(f"产品 {product} 使用的计算频率 {calc_freq} 是一日的倍数, 且采用开盘或收盘时间点")
@@ -303,9 +310,16 @@ class FactorTester:
             start_prices = temp_series.reindex(start_datetimes)
             assert len(start_prices) == len(start_datetimes), "start_prices 和 start_datetimes 长度不一致。"
 
-            if return_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and (open_market or close_market):
+            if return_freq.total_seconds() % pd.Timedelta('1 day').total_seconds() == 0 and offset is not None:
                 assert indices_market is not None
-                end_datetimes = all_datetimes[indices_market[return_step-1::calc_step]]
+                assert num_offset_neg is not None
+                indices = [
+                    indices_market[p + off]
+                    for p in range(return_step * len(offset), len(indices_market), calc_step * len(offset))
+                    for off in range(len(offset))
+                    if p + off < len(indices_market) and p + off > return_step * len(offset) + num_offset_neg - 1
+                ]
+                end_datetimes = all_datetimes[indices]
                 len_diff = len(start_datetimes) - len(end_datetimes)
                 assert len_diff >= 0, "start_datetimes 长度不得比 end_datetimes 短。"
                 if len_diff > 0:
@@ -331,7 +345,7 @@ class FactorTester:
             assert len(end_prices) == len(end_datetimes), "end_prices 和 end_datetimes 长度不一致。"
             
             raw_return = end_prices.values / start_prices.values
-
+            
             if date_index:
                 index = df.index[df.index.get_level_values(1).isin(start_datetimes)].get_level_values(0)
                 assert len(index) == len(start_datetimes), "index 和 start_datetimes 长度不一致。"
@@ -339,7 +353,7 @@ class FactorTester:
                 self.logger.info(f"产品 {product} 采用日期索引的收益率序列计算完毕")
             else:
                 final_series = pd.Series(raw_return, index=df.index[np.array(keep_indices)] if keep_indices else df.index)
-
+            
             if delta_return:
                 final_series = final_series - 1
             elif log_return:
