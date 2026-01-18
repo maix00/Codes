@@ -3,7 +3,7 @@ from enum import Enum
 import itertools
 import pandas as pd
 import numpy as np
-from typing import Callable, List, Dict, Optional, Tuple
+from typing import Callable, List, Dict, Optional, Tuple, Any
 import os
 from Products import Futures, FuturesContract, ProductBase
 from collections import Counter
@@ -11,6 +11,65 @@ import logging
 
 logger_dir_path_default = '../data/factor_tester_log/'
 
+PriceColumnMapping = {
+    'C': 'close_price',
+    'O': 'open_price',
+    'H': 'high_price',
+    'L': 'low_price',
+    'V': 'volume',
+    'AM': 'adjustment_mul',
+    'AA': 'adjustment_add',
+    'CA': 'close_price_adjusted',
+    'OA': 'open_price_adjusted',
+}
+
+import inspect
+
+class FactorGrid:
+    # 子类需覆盖：参数的可选范围
+    params_space: Dict[str, List[Any]] = {}
+    # 子类需覆盖：默认参数
+    default_params: Dict[str, Any] = {}
+
+    def __init__(self, factor_name_stem: str):
+        self.factor_name_stem = factor_name_stem
+
+    def factor_func(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+        raise NotImplementedError("请在子类中实现 `factor_func` 方法。")
+    
+    def get_param(self, kwargs, k: str):
+        return kwargs.get(k, self.default_params[k])
+
+    def _get_complete_params(self, **kwargs) -> Dict[str, Any]:
+        """合并默认参数并校验合法性"""
+        # 1. 以默认值为基础，用传入的 kwargs 覆盖
+        full_params = {**self.default_params, **kwargs}
+        
+        # 2. 校验参数是否在定义的范围内
+        for k, v in full_params.items():
+            if k in self.params_space:
+                if v not in self.params_space[k]:
+                    raise ValueError(f"参数 '{k}' 的值 '{v}' 不在允许范围 {self.params_space[k]} 内")
+            else:
+                # 如果传入了 params_space 没定义的参数，可以报错或警告
+                raise KeyError(f"未定义的参数名: '{k}'")
+        
+        # 3. 排序以保证 get_factor_name 的一致性
+        return dict(sorted(full_params.items()))
+
+    def get_factor_func(self, **kwargs) -> Callable[[pd.DataFrame], pd.Series]:
+        params = self._get_complete_params(**kwargs)
+        return lambda df: self.factor_func(df, **params)
+
+    def get_factor_name(self, **kwargs) -> str:
+        params = self._get_complete_params(**kwargs)
+        # 格式化参数部分：k:v|k:v
+        kwargs_str = '|'.join(f"{k}:{v}" for k, v in params.items())
+        parts = [self.factor_name_stem, kwargs_str]
+        return '|'.join(p for p in parts if p)
+
+    def get_factor_name_func(self, **kwargs) -> tuple[str, Callable[[pd.DataFrame], pd.Series]]:
+        return self.get_factor_name(**kwargs), self.get_factor_func(**kwargs)
 class FactorTester:
     def __init__(self, file_paths: List[str], 
                  start_date: Optional[str] = None, end_date: Optional[str] = None,
@@ -327,10 +386,10 @@ class FactorTester:
                 self.logger.info(f"产品 {product} 使用的收益率频率 {return_freq} 是一日的倍数, 且采用开盘或收盘时间点")
             else:
                 if continuous_calc and\
-                    return_freq.total_seconds() % self.data_freq[product].total_seconds() == 0:
-                    offset = int(return_freq / self.data_freq[product])
+                    return_freq.total_seconds() % data_freq.total_seconds() == 0:
+                    off = int(return_freq / data_freq)
                     base_indices = keep_indices if keep_indices is not None else list(range(len(all_datetimes)))
-                    end_keep_indices = [idx + offset for idx in base_indices if idx + offset < len(all_datetimes)]
+                    end_keep_indices = [idx + off for idx in base_indices if idx + off < len(all_datetimes)]
                     end_datetimes = all_datetimes[end_keep_indices]
                     len_diff = len(start_datetimes) - len(end_datetimes)
                     assert len_diff >= 0, "start_datetimes 长度不得比 end_datetimes 短。"
@@ -444,8 +503,8 @@ class FactorTester:
         ic_stats = {}
         for factor_name in factor_names:
             factor_rank = self.calc_rank(self.factor_data[factor_name])
-            return_df, delta_return, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col, 
-                                                                    return_freq=return_freq, daily_anchors=return_daily_anchors)
+            return_df, _, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col, 
+                                                               return_freq=return_freq, daily_anchors=return_daily_anchors)
             return_rank = self.calc_rank(return_df)
             dt_index = factor_rank.index.intersection(return_rank.index)
             start_date = start_date if start_date is not None else self.start_date
@@ -694,10 +753,8 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
                       end_date='2025-05-30', 
                       futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
 
-    tester.calc_factor(lambda df: factor_func(df, price_col='close_price_adjusted'), factor_name=factor_name)
+    tester.calc_factor(factor_func, factor_name=factor_name)
     factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
-    # tester.calc_return(return_freq = '40 minutes', calc_freq = '35 minutes')
-    # print(daily_return(tester.data[Futures('A.DCE')], price_col='close_price_adjusted', daily_anchors=[pd.Timedelta('30 minutes'), -pd.Timedelta('60 minutes')], data_freq=pd.Timedelta('1 minute')))
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
     print(factor_name, 'IC Stats:\n', stats)
 
