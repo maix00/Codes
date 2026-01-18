@@ -348,9 +348,6 @@ class FactorTester:
                 self.calc_factor_freq(data=factors_df, name=factor_name)
             else:
                 self.factor_freq[factor_name] = frequency
-            # 获取第一个因子的时间戳
-            if not factors_df.empty:
-                self.first_factor_timestamp = factors_df.index[0]
 
         return factors_df
     
