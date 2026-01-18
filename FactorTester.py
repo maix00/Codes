@@ -224,7 +224,6 @@ class FactorTester:
             returns_df = self.calc_daily_return(price_col=price_col, 
                                                 open_market=open_market, close_market=close_market, 
                                                 return_freq=return_freq, timedelta_offset=timedelta_offset)
-            print(returns_df)
             self.logger.info(f"计算完毕, 返回结果长度为 {len(returns_df)}, 起始索引为 {returns_df.index[0]}, 结束索引为 {returns_df.index[-1]}")
             if not delta_return:
                 returns_df = returns_df + 1
@@ -644,8 +643,12 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
             if isinstance(to, str):
                 if to == 'open_market':
                     off = 0
+                    offset.append(off)
+                    continue
                 elif to == 'close_market':
                     off = -1
+                    offset.append(off)
+                    continue
                 else:
                     try:
                         to = pd.Timedelta(to)
@@ -700,7 +703,7 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
     # tester.calc_return(return_freq = '40 minutes', calc_freq = '35 minutes')
     # print(daily_return(tester.data[Futures('A.DCE')], price_col='close_price_adjusted', timedelta_offset=[pd.Timedelta('30 minutes'), -pd.Timedelta('60 minutes')], data_freq=pd.Timedelta('1 minute')))
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_open_market=True)
-    _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_timedelta_offset='-1 minute')
+    _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_timedelta_offset='open_market')
     print(factor_name, 'IC Stats:\n', stats)
 
     groups, returns_groups = tester.group_classes(factor_name, 
