@@ -207,10 +207,13 @@ class FactorTester:
             daily_anchors is not None:
             self.logger.info("收益率频率与计算频率均为一日, 且返回收益率序列要求以日期索引, 选择该日开盘或收盘作为计算点, 采用快速计算方式.")
             self.logger.info(f"选择自开盘后或收盘前某个偏移量作为计算点: {daily_anchors}")
-            returns_df = self.calc_daily_return(price_col=price_col, date_index=True,
+            returns_df = self.calc_daily_return(price_col=price_col, date_index=date_index,
                                                 return_freq=return_freq, daily_anchors=daily_anchors)
             step = int(calc_freq / pd.Timedelta('1 day'))
-            returns_df = returns_df.iloc[::step]
+            if step > 1:
+                all_dates = returns_df.index.get_level_values(0).unique()
+                samp_dates = all_dates[::step]
+                returns_df = returns_df.loc[returns_df.index.get_level_values(0).isin(samp_dates)]
             self.logger.info(f"计算完毕, 返回结果长度为 {len(returns_df)}, 起始索引为 {returns_df.index[0]}, 结束索引为 {returns_df.index[-1]}")
             if not delta_return:
                 returns_df = returns_df + 1
