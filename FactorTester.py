@@ -180,24 +180,24 @@ class FactorTester:
         self.logger.info(f"是否计算百分比收益率: {delta_return}")
         self.logger.info(f"是否计算对数收益率: {log_return}")
 
-        factor_frequency = pd.Series(self.factor_freq.values()).unique()
-        factor_frequency = factor_frequency[0] if len(factor_frequency) == 1 else None
-        assert factor_frequency is None or isinstance(factor_frequency, pd.Timedelta)
-        self.logger.info(f"因子池中的因子有共同频率: {factor_frequency}")
+        factor_freq = pd.Series(self.factor_freq.values()).unique()
+        factor_freq = factor_freq[0] if len(factor_freq) == 1 else None
+        assert factor_freq is None or isinstance(factor_freq, pd.Timedelta)
+        self.logger.info(f"因子池中的因子有共同频率: {factor_freq}")
 
-        data_frequency = pd.Series(self.data_freq.values()).unique()
-        data_frequency = data_frequency[0] if len(data_frequency) == 1 else None
-        assert data_frequency is None or isinstance(data_frequency, pd.Timedelta)
-        self.logger.info(f"数据池中的数据有共同频率: {data_frequency}")
+        data_freq = pd.Series(self.data_freq.values()).unique()
+        data_freq = data_freq[0] if len(data_freq) == 1 else None
+        assert data_freq is None or isinstance(data_freq, pd.Timedelta)
+        self.logger.info(f"数据池中的数据有共同频率: {data_freq}")
 
         if calc_freq is None:
-            calc_freq = factor_frequency if factor_frequency is not None else data_frequency
+            calc_freq = factor_freq if factor_freq is not None else data_freq
         elif isinstance(calc_freq, str):
             calc_freq = pd.Timedelta(calc_freq)
         self.logger.info(f"计算频率为: {calc_freq}")
         
         if return_freq is None:
-            return_freq = factor_frequency if factor_frequency is not None else data_frequency
+            return_freq = factor_freq if factor_freq is not None else data_freq
         elif isinstance(return_freq, str):
             return_freq = pd.Timedelta(return_freq)
         self.logger.info(f"收益率频率为: {return_freq}")
@@ -207,8 +207,10 @@ class FactorTester:
             daily_anchors is not None:
             self.logger.info("收益率频率与计算频率均为一日, 且返回收益率序列要求以日期索引, 选择该日开盘或收盘作为计算点, 采用快速计算方式.")
             self.logger.info(f"选择自开盘后或收盘前某个偏移量作为计算点: {daily_anchors}")
-            returns_df = self.calc_daily_return(price_col=price_col, date_index=date_index,
+            returns_df = self.calc_daily_return(price_col=price_col, date_index=True,
                                                 return_freq=return_freq, daily_anchors=daily_anchors)
+            step = int(calc_freq / pd.Timedelta('1 day'))
+            returns_df = returns_df.iloc[::step]
             self.logger.info(f"计算完毕, 返回结果长度为 {len(returns_df)}, 起始索引为 {returns_df.index[0]}, 结束索引为 {returns_df.index[-1]}")
             if not delta_return:
                 returns_df = returns_df + 1
@@ -216,12 +218,12 @@ class FactorTester:
                 returns_df = pd.DataFrame(np.log(returns_df))
             return (returns_df, delta_return, log_return)
         
-        if continuous_calc and data_frequency is not None and\
-            calc_freq is not None and calc_freq.total_seconds() % data_frequency.total_seconds() == 0 and\
-            return_freq is not None and return_freq.total_seconds() % data_frequency.total_seconds() == 0:
+        if continuous_calc and data_freq is not None and\
+            calc_freq is not None and calc_freq.total_seconds() % data_freq.total_seconds() == 0 and\
+            return_freq is not None and return_freq.total_seconds() % data_freq.total_seconds() == 0:
             self.logger.info("连续计算下, 计算频率、收益率频率是数据共同频率的整数倍, 采用快速计算方式.")
-            step = int(calc_freq / data_frequency)
-            interval = int(return_freq / data_frequency)
+            step = int(calc_freq / data_freq)
+            interval = int(return_freq / data_freq)
             self.logger.info(f"收益率频率是数据共同频率的 {interval} 倍")
             returns_df = self.calc_interval_return(interval=interval, price_col=price_col)
             returns_df = returns_df[0::step]
@@ -247,33 +249,33 @@ class FactorTester:
             assert isinstance(return_freq, pd.Timedelta)
 
             data_freq = self.data_freq[product]
-
+            offset = process_daily_anchors(data_freq=data_freq, daily_anchors=daily_anchors) if daily_anchors is not None else None
             
             if len(df.index.names) == 2:
-                temp_df = df
+                pass
             elif len(df.index.names) == 1:
                 self.logger.info(f"产品 {product} 的数据索引列长度为 1，将使用 {time_cols} 列作为索引")
-                temp_df = df.copy()
+                df = df.copy()
                 if time_cols and len(time_cols) == 2:
-                    temp_df = temp_df.reset_index()
-                    temp_df[time_cols[0]] = pd.to_datetime(temp_df[time_cols[0]])#.dt.date
-                    temp_df[time_cols[1]] = pd.to_datetime(temp_df[time_cols[1]])
-                    temp_df = temp_df.set_index(time_cols)
+                    df = df.reset_index()
+                    df[time_cols[0]] = pd.to_datetime(df[time_cols[0]])#.dt.date
+                    df[time_cols[1]] = pd.to_datetime(df[time_cols[1]])
+                    df = df.set_index(time_cols)
                 else:
                     message = f"新的索引列长度应为2, 现在为 {len(time_cols) if time_cols else 0}"
                     self.logger.error(message); raise AssertionError(message)
-                temp_df = temp_df.sort_index()
+                df = df.sort_index()
             else:
                 message = f"产品 {product} 索引列长度错误, 应为一或二: {df.index.names}"
                 self.logger.error(message); raise AssertionError(message)
-            temp_series = temp_df[price_col].droplevel(0)
+            temp_series = df[price_col].droplevel(0)
 
-            all_dates = temp_df.index.get_level_values(0)
+            all_dates = df.index.get_level_values(0)
             indices_of_next_row_changed = np.where(all_dates[:-1] != all_dates[1:])[0]
             indices_market = indices_of_next_row_changed if close_market else indices_of_next_row_changed + 1 if open_market else None
             calc_step = int(calc_freq / pd.Timedelta('1 day'))
             return_step = int(return_freq / pd.Timedelta('1 day'))
-            all_datetimes = temp_df.index.get_level_values(1)
+            all_datetimes = df.index.get_level_values(1)
             self.logger.info(f"产品 {product} 计算收益率序列的起始时间共有 {len(all_datetimes)} 个时间点")
 
             if calc_freq:
@@ -328,12 +330,12 @@ class FactorTester:
             raw_return = end_prices.values / start_prices.values
 
             if date_index:
-                index = temp_df.index[temp_df.index.get_level_values(1).isin(start_datetimes)].get_level_values(0)
+                index = df.index[df.index.get_level_values(1).isin(start_datetimes)].get_level_values(0)
                 assert len(index) == len(start_datetimes), "index 和 start_datetimes 长度不一致。"
                 final_series = pd.Series(raw_return, index=index)
                 self.logger.info(f"产品 {product} 采用日期索引的收益率序列计算完毕")
             else:
-                final_series = pd.Series(raw_return, index=temp_df.index[np.array(keep_indices)] if keep_indices else temp_df.index)
+                final_series = pd.Series(raw_return, index=df.index[np.array(keep_indices)] if keep_indices else df.index)
 
             if delta_return:
                 final_series = final_series - 1
