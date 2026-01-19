@@ -30,12 +30,18 @@ class FactorGrid:
 
     def __init__(self, factor_name_stem: str):
         self.factor_name_stem = factor_name_stem
+        self.current_params_space = self.params_space
 
     def _factor_func(self, df: pd.DataFrame, *args, **kwargs) -> pd.Series:
         raise NotImplementedError("请在子类中实现 `factor_func` 方法。")
     
-    def get_param(self, kwargs, k: str):
-        return kwargs.get(k, self.default_params[k])
+    def _set_current_params_space(self, **kwargs):
+        if not kwargs:
+            return
+        for key in kwargs:
+            if not isinstance(kwargs[key], list):
+                kwargs[key] = [kwargs[key]]
+        self.current_params_space = self._get_complete_params(**{**self.params_space, **kwargs})
 
     def _get_complete_params(self, **kwargs) -> Dict[str, Any]:
         """合并默认参数并校验合法性"""
@@ -45,7 +51,9 @@ class FactorGrid:
         # 2. 校验参数是否在定义的范围内
         for k, v in full_params.items():
             if k in self.params_space:
-                if v not in self.params_space[k]:
+                if not isinstance(v, list):
+                    v = [v]
+                if not all(vv in self.params_space[k] for vv in v):
                     raise ValueError(f"参数 '{k}' 的值 '{v}' 不在允许范围 {self.params_space[k]} 内")
             else:
                 # 如果传入了 params_space 没定义的参数，可以报错或警告
@@ -67,40 +75,20 @@ class FactorGrid:
     def get_factor(self, **kwargs) -> tuple[str, Callable[[pd.DataFrame], pd.Series]]:
         return self.get_factor_name(**kwargs), self.get_factor_func(**kwargs)
     
-    def get_factor_list(self) -> List[tuple[str, Callable]]:
-        """
-        生成该因子空间下所有可能的 (因子名, 因子函数) 组合
-        """
-        # 1. 提取参数名和对应的取值列表
-        # keys: ['PC', 'W'], values: [['CA', 'CB'], [5, 10]]
-        keys = list(self.params_space.keys())
-        values = list(self.params_space.values())
-
-        grid_configs = []
-        
-        # 2. 使用 itertools.product 生成笛卡尔积（排列组合）
-        for combination in itertools.product(*values):
-            # 将组合与 key 重新配对成 dict
-            # 例如: {'PC': 'CA', 'W': 5}
-            spec_kwargs = dict(zip(keys, combination))
-            
-            # 3. 利用之前写好的方法生成名字和函数
-            grid_configs.append(self.get_factor(**spec_kwargs))
-            
-        return grid_configs
+    def get_factor_list(self, **kwargs) -> List[tuple[str, Callable]]:
+        return self.get_factor_tensor(**kwargs).flatten().tolist()
     
-    def get_param_tensor_shape(self) -> tuple[int, ...]:
-        """
-        返回参数张量的形状
-        """
-        return tuple(len(v) for v in self.params_space.values())
+    def get_param_tensor_shape(self, **kwargs) -> tuple[int, ...]:
+        self._set_current_params_space(**kwargs)
+        return tuple(len(v) for v in self.current_params_space.values())
 
-    def get_param_tensor(self) -> np.ndarray:
+    def get_param_tensor(self, **kwargs) -> np.ndarray:
         """
         生成多维张量，每个维度对应一个参数，值为参数取值列表
         """
-        keys = list(self.params_space.keys())
-        values = list(self.params_space.values())
+        self._set_current_params_space(**kwargs)
+        keys = list(self.current_params_space.keys())
+        values = list(self.current_params_space.values())
         
         # 获取每个参数的取值数量
         shape = tuple(len(v) for v in values)
@@ -116,12 +104,13 @@ class FactorGrid:
         
         return tensor
     
-    def get_factor_tensor(self) -> np.ndarray:
+    def get_factor_tensor(self, **kwargs) -> np.ndarray:
         """
         生成多维张量，每个维度对应一个参数，值为(因子名, 因子函数)的元组
         """
-        keys = list(self.params_space.keys())
-        values = list(self.params_space.values())
+        self._set_current_params_space(**kwargs)
+        keys = list(self.current_params_space.keys())
+        values = list(self.current_params_space.values())
         
         # 获取每个参数的取值数量
         shape = tuple(len(v) for v in values)
@@ -144,7 +133,8 @@ class FactorGrid:
         params = self._get_complete_params(**kwargs)
         factor_test(self.get_factor(**params), n_groups=n_groups, plot_n_group_list=plot_n_group_list)
 
-    def factor_grid_test(self):
+    def factor_grid_test(self, **kwargs):
+        self._set_current_params_space(**kwargs)
         factor_test(self)
         
 class FactorTester:
@@ -842,7 +832,7 @@ def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callabl
     elif isinstance(factors, FactorGrid):
         factor_name = factors.get_factor_name()
     assert factor_name is not None
-    
+
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
     print(factor_name, 'IC Stats:\n', stats)
 
