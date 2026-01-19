@@ -16,9 +16,6 @@ PriceColumnMapping = {
     'O': 'open_price',
     'H': 'high_price',
     'L': 'low_price',
-    'V': 'volume',
-    'AM': 'adjustment_mul',
-    'AA': 'adjustment_add',
     'CA': 'close_price_adjusted',
     'OA': 'open_price_adjusted',
 }
@@ -63,13 +60,35 @@ class FactorGrid:
 
     def get_factor_name(self, **kwargs) -> str:
         params = self._get_complete_params(**kwargs)
-        # 格式化参数部分：k:v|k:v
         kwargs_str = '|'.join(f"{k}:{v}" for k, v in params.items())
         parts = [self.factor_name_stem, kwargs_str]
         return '|'.join(p for p in parts if p)
 
-    def get_factor_name_func(self, **kwargs) -> tuple[str, Callable[[pd.DataFrame], pd.Series]]:
+    def get_factor(self, **kwargs) -> tuple[str, Callable[[pd.DataFrame], pd.Series]]:
         return self.get_factor_name(**kwargs), self.get_factor_func(**kwargs)
+    
+    def gen_grid(self) -> List[tuple[str, Callable]]:
+        """
+        生成该因子空间下所有可能的 (因子名, 因子函数) 组合
+        """
+        # 1. 提取参数名和对应的取值列表
+        # keys: ['PC', 'W'], values: [['CA', 'CB'], [5, 10]]
+        keys = list(self.params_space.keys())
+        values = list(self.params_space.values())
+
+        grid_configs = []
+        
+        # 2. 使用 itertools.product 生成笛卡尔积（排列组合）
+        for combination in itertools.product(*values):
+            # 将组合与 key 重新配对成 dict
+            # 例如: {'PC': 'CA', 'W': 5}
+            spec_kwargs = dict(zip(keys, combination))
+            
+            # 3. 利用之前写好的方法生成名字和函数
+            grid_configs.append(self.get_factor(**spec_kwargs))
+            
+        return grid_configs
+
 class FactorTester:
     def __init__(self, file_paths: List[str], 
                  start_date: Optional[str] = None, end_date: Optional[str] = None,
@@ -734,14 +753,17 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
     assert isinstance(returns, pd.Series)
     return returns
 
-def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] = None,
+def integrated_ic_test_daily(factor_name_func: tuple[str, Callable],
+                # factor_func: Callable, factor_name: Optional[str] = None,
                              n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
     
-    import cProfile
-    import pstats
+    # import cProfile
+    # import pstats
 
-    profiler = cProfile.Profile()
-    profiler.enable()
+    # profiler = cProfile.Profile()
+    # profiler.enable()
+
+    factor_name, factor_func = factor_name_func
     
     parquet_dir = '../data/main_mink/'
     file_list = [
@@ -754,7 +776,7 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
                       futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
 
     tester.calc_factor(factor_func, factor_name=factor_name)
-    factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
+    # factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
     print(factor_name, 'IC Stats:\n', stats)
 
@@ -770,8 +792,8 @@ def integrated_ic_test_daily(factor_func: Callable, factor_name: Optional[str] =
     #     print(date, returns_groups['group_0'][date])
     #     pass
 
-    profiler.disable()
-    # 输出分析结果
-    stats = pstats.Stats(profiler)
-    stats.sort_stats('cumulative')  # 按累计时间排序
-    stats.print_stats(20)  # 显示前20个耗时最多的函数
+    # profiler.disable()
+    # # 输出分析结果
+    # stats = pstats.Stats(profiler)
+    # stats.sort_stats('cumulative')  # 按累计时间排序
+    # stats.print_stats(20)  # 显示前20个耗时最多的函数
