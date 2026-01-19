@@ -14,8 +14,8 @@ logger_dir_path_default = '../data/factor_tester_log/'
 PriceColumnMapping = {
     'C': 'close_price',
     'O': 'open_price',
-    'H': 'high_price',
-    'L': 'low_price',
+    'H': 'highest_price',
+    'L': 'lowest_price',
     'CA': 'close_price_adjusted',
     'OA': 'open_price_adjusted',
 }
@@ -67,7 +67,7 @@ class FactorGrid:
     def get_factor(self, **kwargs) -> tuple[str, Callable[[pd.DataFrame], pd.Series]]:
         return self.get_factor_name(**kwargs), self.get_factor_func(**kwargs)
     
-    def gen_grid(self) -> List[tuple[str, Callable]]:
+    def get_factor_list(self) -> List[tuple[str, Callable]]:
         """
         生成该因子空间下所有可能的 (因子名, 因子函数) 组合
         """
@@ -89,13 +89,63 @@ class FactorGrid:
             
         return grid_configs
     
+    def get_param_tensor_shape(self) -> tuple[int, ...]:
+        """
+        返回参数张量的形状
+        """
+        return tuple(len(v) for v in self.params_space.values())
+
+    def get_param_tensor(self) -> np.ndarray:
+        """
+        生成多维张量，每个维度对应一个参数，值为参数取值列表
+        """
+        keys = list(self.params_space.keys())
+        values = list(self.params_space.values())
+        
+        # 获取每个参数的取值数量
+        shape = tuple(len(v) for v in values)
+        
+        # 创建对象数组来存储参数取值列表
+        tensor = np.empty(shape, dtype=object)
+        
+        # 填充张量
+        for combination in itertools.product(*values):
+            # 根据combination获取索引
+            indices = tuple(values[i].index(combination[i]) for i in range(len(keys)))
+            tensor[indices] = combination
+        
+        return tensor
+    
+    def get_factor_tensor(self) -> np.ndarray:
+        """
+        生成多维张量，每个维度对应一个参数，值为(因子名, 因子函数)的元组
+        """
+        keys = list(self.params_space.keys())
+        values = list(self.params_space.values())
+        
+        # 获取每个参数的取值数量
+        shape = tuple(len(v) for v in values)
+        
+        # 创建对象数组来存储元组
+        tensor = np.empty(shape, dtype=object)
+        
+        # 填充张量
+        for combination in itertools.product(*values):
+            spec_kwargs = dict(zip(keys, combination))
+            factor_name, factor_func = self.get_factor(**spec_kwargs)
+            
+            # 根据combination获取索引
+            indices = tuple(values[i].index(combination[i]) for i in range(len(keys)))
+            tensor[indices] = (factor_name, factor_func)
+        
+        return tensor
+    
     def factor_test(self, n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None, **kwargs):
         params = self._get_complete_params(**kwargs)
         factor_test(self.get_factor(**params), n_groups=n_groups, plot_n_group_list=plot_n_group_list)
 
     def factor_grid_test(self):
-        for factor_name, factor_func in self.gen_grid():
-            self.factor_test(factor_name=factor_name, factor_func=factor_func)
+        factor_test(self)
         
 class FactorTester:
     def __init__(self, file_paths: List[str], 
@@ -486,35 +536,36 @@ class FactorTester:
         else:
             return None
         
-    def calc_factor(self, factor_func: Callable[[pd.DataFrame], pd.Series], factor_name: Optional[str] = None,
-                    set_freq: bool = True, frequency: Optional[pd.Timedelta] = None) -> pd.DataFrame:
-        """
-        将因子函数应用于每个合约的DataFrame。
+    def calc_factor(self, factors):
+        if isinstance(factors, FactorGrid):
+            factors = factors.get_factor_list()
+        elif isinstance(factors, Callable):
+            factors = [('Factor_' + str(len(self.factor_data)), factors)]
+        elif isinstance(factors, list) and factors and isinstance(factors[0], Callable):
+            assert all(isinstance(factor, Callable) for factor in factors)
+            factors = [('Factor_' + str(len(self.factor_data) + idx), factors[idx]) for idx in range(len(factors))]
+        elif isinstance(factors, tuple):
+            factors = [factors]
+        elif isinstance(factors, np.ndarray):
+            factors = factors.flatten().tolist()
+        assert isinstance(factors, list)
+        assert all(isinstance(factor, tuple) for factor in factors)
+        assert all(isinstance(factor[0], str) for factor in factors)
+        assert all(isinstance(factor[1], Callable) for factor in factors)
         
-        参数:
-            factor_func: 接收DataFrame并返回Series（以datetime为索引）的函数
-            frequency: 因子频率，FactorFrequency枚举值
-        
-        返回:
-            DataFrame: 索引为datetime，列为合约名称
-        """
-
-        # 计算因子
-        factors = {}
-        for c, df in self.data.items():
-            factors[c] = factor_func(df)
-        factors_df = pd.DataFrame(factors)
-        factor_name = 'Factor_' + str(len(self.factor_data)) if factor_name is None else factor_name
-        self.factor_data[factor_name] = factors_df
-
-        if set_freq:
-            # 如果因子频率未指定，则尝试从数据中获取
-            if factors and frequency is None:
-                self.calc_factor_freq(data=factors_df, name=factor_name)
+        for factor_name, factor_func in factors:
+            this_factors = {}
+            for c, df in self.data.items():
+                this_factors[c] = factor_func(df)
+            if this_factors:
+                this_factors_df = pd.DataFrame(this_factors)
+                self.factor_data[factor_name] = this_factors_df
+                self.calc_factor_freq(data=this_factors_df, name=factor_name)
             else:
-                self.factor_freq[factor_name] = frequency
-
-        return factors_df
+                message = f"因子 {factor_name} 未能计算出任何数据。"
+                self.logger.error(message)
+                raise ValueError(message)
+        return self.factor_data
     
     def calc_rank(self, df: pd.DataFrame) -> pd.DataFrame:
         return df.rank(axis=1, method='average', na_option='keep', pct=True)
@@ -761,7 +812,7 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
     assert isinstance(returns, pd.Series)
     return returns
 
-def factor_test(factor_name_func: tuple[str, Callable],
+def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callable]],
                 n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
     
     # import cProfile
@@ -770,27 +821,35 @@ def factor_test(factor_name_func: tuple[str, Callable],
     # profiler = cProfile.Profile()
     # profiler.enable()
 
-    factor_name, factor_func = factor_name_func
-    
     parquet_dir = '../data/main_mink/'
     file_list = [
         os.path.join(parquet_dir, f)
         for f in os.listdir(parquet_dir)
         if f.endswith('.parquet') and '_S' not in f and '-S' not in f
     ]
+    
     tester = FactorTester(file_list, #start_date='2025-01-01', 
-                      end_date='2025-05-30', 
-                      futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
+                    end_date='2025-05-30', 
+                    futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
 
-    tester.calc_factor(factor_func, factor_name=factor_name)
-    # factor_name = factor_name if factor_name is not None else list(tester.factor_data.keys())[-1]
+    tester.calc_factor(factors)
+
+    factor_name = None
+    if isinstance(factors, tuple) and isinstance(factors[0], str):
+        factor_name = factors[0]
+    elif isinstance(factors, list) and factors and isinstance(factors[0], tuple) and isinstance(factors[0][0], str):
+        factor_name = factors[0][0]
+    elif isinstance(factors, FactorGrid):
+        factor_name = factors.get_factor_name()
+    assert factor_name is not None
+    
     _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
     print(factor_name, 'IC Stats:\n', stats)
 
     groups, returns_groups = tester.group_classes(factor_name, 
-                                                  plot_flag=True, n_groups=n_groups, plot_n_group_list=plot_n_group_list,
-                                                  start_date='2025-01-01', end_date='2025-12-31',
-                                                  return_price_col='open_price_adjusted', return_daily_anchors='open_market'
+                                                plot_flag=True, n_groups=n_groups, plot_n_group_list=plot_n_group_list,
+                                                start_date='2025-01-01', end_date='2025-12-31',
+                                                return_price_col='open_price_adjusted', return_daily_anchors='open_market'
                                                 )
     # # Get the earliest five dates from the 'top' group
     # earliest_dates = sorted(groups['group_0'].keys())[:5]
