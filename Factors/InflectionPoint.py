@@ -9,8 +9,8 @@ class InflP(FactorGrid): # Inflection Point
 
     params_space: Dict[str, List[Any]] = {
         'PC': list(PriceColumnMapping.keys()),
-        # 'W': [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200],
-        'W': [100, 150, 200],
+        'W': [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        # 'W': [100, 150, 200],
     }
 
     default_params: Dict[str, Any] = {'PC': 'CA', 'W': 5}
@@ -22,6 +22,8 @@ class InflP(FactorGrid): # Inflection Point
         daily_inflection = inflection.astype(int).groupby(level='trading_day').sum()
         rolling_mean = daily_inflection.rolling(window=W, min_periods=1).mean().shift(1)
         factor = daily_inflection - rolling_mean
+        if PC in ['L', 'LA']:
+            factor = -factor
         return factor
 
 if __name__ == '__main__':

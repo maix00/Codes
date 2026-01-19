@@ -5,6 +5,8 @@ import pandas as pd
 import numpy as np
 from typing import Callable, List, Dict, Optional, Tuple, Any
 import os
+
+from scipy import stats
 from Products import Futures, ProductBase
 import logging
 
@@ -846,17 +848,29 @@ def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callabl
     tester.calc_factor(factors)
 
     _, stats = tester.calc_ic(factors=factors, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
-    stats_top4 = stats.T.nlargest(4, columns='t_stat').T
-    print('Top 4 Factors by t_stat:\n', stats_top4)
-    factor_names = stats_top4.columns.tolist()
-
-    which_factor = int(input(f'选择哪一个因子进行分类回测 (1 - {len(factor_names)}): ')) - 1
-
-    groups, returns_groups = tester.group_classes(factor_names[which_factor], 
+    print('IC Stats Median t_stat:', stats.loc['t_stat'].median())
+    if len(stats.columns) >= 4:
+        stats = stats.T.sort_values('t_stat', ascending=False)
+        mid = len(stats.columns)//2
+        stats = pd.concat([
+            stats[:2].T, stats[mid:mid+1].T, stats[-1:].T
+        ], axis=1)
+    print('Selected by t_stat:\n', stats)
+    factor_names = stats.columns.tolist()
+    
+    loop_bool = True
+    while loop_bool:
+        which_factor = input(f'选择哪一个因子进行分类回测 (1 - {len(factor_names)}): ')
+        if which_factor.isdigit() and 1 <= int(which_factor) <= len(factor_names):
+            which_factor = int(which_factor) - 1
+            groups, returns_groups = tester.group_classes(factor_names[which_factor], 
                                                 plot_flag=True, n_groups=n_groups, plot_n_group_list=plot_n_group_list,
                                                 start_date='2025-01-01', end_date='2025-12-31',
                                                 return_price_col='open_price_adjusted', return_daily_anchors='open_market'
                                                 )
+        else:
+            loop_bool = False
+
     # # Get the earliest five dates from the 'top' group
     # earliest_dates = sorted(groups['group_0'].keys())[:5]
     # for date in earliest_dates:
