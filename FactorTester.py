@@ -6,7 +6,6 @@ import numpy as np
 from typing import Callable, List, Dict, Optional, Tuple, Any
 import os
 
-from scipy import stats
 from Products import Futures, ProductBase
 import logging
 
@@ -35,7 +34,8 @@ class FactorGrid:
         self.factor_name_stem = factor_name_stem if factor_name_stem else self.__class__.__name__
         self.current_params_space = self.params_space
 
-    def _factor_func(self, df: pd.DataFrame, *args, **kwargs) -> pd.Series:
+    def _factor_func(self, data: Dict[ProductBase, pd.DataFrame], 
+                     data_freq: Dict[ProductBase, pd.Timedelta], *args, **kwargs) -> pd.DataFrame:
         raise NotImplementedError("请在子类中实现 `factor_func` 方法。")
     
     def _set_current_params_space(self, **kwargs):
@@ -65,9 +65,9 @@ class FactorGrid:
         # 3. 排序以保证 get_factor_name 的一致性
         return dict(sorted(full_params.items()))
 
-    def get_factor_func(self, **kwargs) -> Callable[[pd.DataFrame], pd.Series]:
+    def get_factor_func(self, **kwargs) -> Callable[[Dict[ProductBase, pd.DataFrame], Dict[ProductBase, pd.Timedelta]], pd.DataFrame]:
         params = self._get_complete_params(**kwargs)
-        return lambda df: self._factor_func(df, **params)
+        return lambda data, data_freq: self._factor_func(data, data_freq, **params)
 
     def get_factor_name(self, **kwargs) -> str:
         params = self._get_complete_params(**kwargs)
@@ -75,7 +75,7 @@ class FactorGrid:
         parts = [self.factor_name_stem, kwargs_str]
         return '|'.join(p for p in parts if p)
 
-    def get_factor(self, **kwargs) -> tuple[str, Callable[[pd.DataFrame], pd.Series]]:
+    def get_factor(self, **kwargs) -> tuple[str, Callable[[Dict[ProductBase, pd.DataFrame], Dict[ProductBase, pd.Timedelta]], pd.DataFrame]]:
         return self.get_factor_name(**kwargs), self.get_factor_func(**kwargs)
     
     def get_factor_list(self, **kwargs) -> List[tuple[str, Callable]]:
@@ -550,13 +550,10 @@ class FactorTester:
         assert all(isinstance(factor[1], Callable) for factor in factors)
         
         for factor_name, factor_func in factors:
-            this_factors = {}
-            for c, df in self.data.items():
-                this_factors[c] = factor_func(df)
-            if this_factors:
-                this_factors_df = pd.DataFrame(this_factors)
-                self.factor_data[factor_name] = this_factors_df
-                self.calc_factor_freq(data=this_factors_df, name=factor_name)
+            factors_df = factor_func(self.data, self.data_freq)
+            if not factors_df.empty:
+                self.factor_data[factor_name] = factors_df
+                self.calc_factor_freq(data=factors_df, name=factor_name)
             else:
                 message = f"因子 {factor_name} 未能计算出任何数据。"
                 self.logger.error(message)
@@ -839,7 +836,6 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
         if daily_anchors is not None:
             return_freq = return_freq * len(offset)
     assert isinstance(return_freq, int) and return_freq > 0
-    # returns = daily_price.nth(offset).pct_change(periods=return_freq).shift(-return_freq*2)
     returns = daily_price.nth(offset).pct_change(periods=return_freq).shift(-return_freq)
     assert isinstance(returns, pd.Series)
     return returns
@@ -871,7 +867,7 @@ def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callabl
     tester.calc_factor(factors)
 
     _, stats = tester.calc_ic(factors=factors, return_price_col='open_price_adjusted',
-                              return_daily_anchors='open_market', return_freq='2 days')
+                              return_daily_anchors='open_market')#, return_freq='5 days')
     print('IC Stats Median t_stat:', stats.loc['t_stat'].median())
     if len(stats.columns) >= 4:
         stats = stats.T.sort_values('t_stat', ascending=False)
