@@ -9,7 +9,8 @@ class InflP(FactorGrid): # Inflection Point
 
     params_space: Dict[str, List[Any]] = {
         'PC': list(PriceColumnMapping.keys()),
-        'W': [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        # 'W': [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 150, 200],
+        'W': [100, 150, 200],
     }
 
     default_params: Dict[str, Any] = {'PC': 'CA', 'W': 5}

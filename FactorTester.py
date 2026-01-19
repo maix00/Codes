@@ -5,8 +5,7 @@ import pandas as pd
 import numpy as np
 from typing import Callable, List, Dict, Optional, Tuple, Any
 import os
-from Products import Futures, FuturesContract, ProductBase
-from collections import Counter
+from Products import Futures, ProductBase
 import logging
 
 logger_dir_path_default = '../data/factor_tester_log/'
@@ -655,7 +654,7 @@ class FactorTester:
                                  return_freq=return_freq, calc_freq=calc_freq)
 
     def group_classes(self, factor_name: str, n_groups: int = 5, plot_flag: bool = False, 
-                      start_date: Optional[str] = None, end_date: Optional[str] = None,
+                      start_date: Optional[str|pd.Timestamp] = None, end_date: Optional[str|pd.Timestamp] = None,
                       return_price_col: str = 'close_price_adjusted',
                       return_daily_anchors: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None,
                       return_freq: Optional[str|pd.Timedelta] = None,
@@ -682,15 +681,15 @@ class FactorTester:
         group_names = group_names[::-1]
         groups = {name: {} for name in group_names}
         returns_groups = {name: {} for name in group_names}
+
+        start_date = pd.to_datetime(start_date) if start_date is not None else None
+        end_date = pd.to_datetime(end_date) if end_date is not None else None
         
         for dt, row in factor_df.iterrows():
-            dt_str = str(dt)
+            dt_str = dt #str(dt)
             sorted_contracts = row.dropna().sort_values(ascending=False)
             n = len(sorted_contracts)
             idx = list(sorted_contracts.index)
-            idx = [ProductBase(name) for name in idx]
-            if self.futures_flag:
-                idx = [Futures(product.name) for product in idx]
             
             # Split contracts into n_groups groups
             if n > 0:
@@ -698,11 +697,10 @@ class FactorTester:
                 split = np.array_split(idx_array, min(n, n_groups))
                 
                 # Fill groups from bottom to top (ascending order of factor values)
-                for i, group_contracts in enumerate(split):
+                for i, group_products in enumerate(split):
                     group_idx = n_groups - 1 - i  # Reverse order: bottom group first
-                    groups[group_names[group_idx]][dt_str] = list(group_contracts)
-                    contract_names = [product.name for product in group_contracts]
-                    returns_groups[group_names[group_idx]][dt_str] = np.mean(np.asarray(returns.loc[dt_str][contract_names].values, dtype=float))
+                    groups[group_names[group_idx]][dt_str] = list(group_products)
+                    returns_groups[group_names[group_idx]][dt_str] = np.mean(np.asarray(returns.loc[dt_str][group_products].values, dtype=float))
             
             # Fill remaining groups (if n < n_groups) with empty lists
             for i in range(min(n, n_groups), n_groups):
@@ -757,7 +755,7 @@ class FactorTester:
                     if not np.isnan(ret):
                         prev_value = prev_value * (1 + ret)
                     cumulative_returns.append(prev_value)
-                plt.plot(dates, cumulative_returns, label=name)
+                plt.plot([str(date) for date in dates], cumulative_returns, label=name)
             plt.xlabel('Date')
             plt.ylabel('Average Next Day Open Return')
             plt.title('Average Next Day Open Return by Factor Groups')
@@ -766,7 +764,7 @@ class FactorTester:
             n_ticks = 10
             assert len(dates) > 0, "No dates available for plotting."
             tick_indices = np.linspace(0, len(dates) - 1, min(n_ticks, len(dates)), dtype=int)
-            plt.xticks(ticks=[dates[i] for i in tick_indices], rotation=45)
+            plt.xticks(ticks=[str(dates[i]) for i in tick_indices], rotation=45)
             plt.tight_layout()
             plt.show()
 
@@ -848,7 +846,6 @@ def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callabl
     tester.calc_factor(factors)
 
     _, stats = tester.calc_ic(factors=factors, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
-    # print('IC Stats:\n', stats)
     stats_top4 = stats.T.nlargest(4, columns='t_stat').T
     print('Top 4 Factors by t_stat:\n', stats_top4)
     factor_names = stats_top4.columns.tolist()
