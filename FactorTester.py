@@ -569,7 +569,7 @@ class FactorTester:
     def calc_ic(self, factors: str|List[str]|FactorGrid|tuple|List[tuple], 
                 return_price_col: str = 'close_price_adjusted',
                 return_freq: Optional[str|pd.Timedelta] = None,
-                return_daily_anchors: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None,
+                return_daily_anchors: Optional[Any] = None,
                 start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
         
         if isinstance(factors, FactorGrid):
@@ -585,6 +585,15 @@ class FactorTester:
             assert all(isinstance(fn, str) for fn, _ in factors)
             factors = [fn for fn, _ in factors]
         assert isinstance(factors, list)
+
+        shift_one = True
+        if return_daily_anchors is not None:
+            if isinstance(return_daily_anchors, list) or isinstance(return_daily_anchors, tuple):
+                assert len(return_daily_anchors) == 1, "IC测试仅支持单一时间点作为每日锚点。"
+                return_daily_anchors = return_daily_anchors[0]
+            assert isinstance(return_daily_anchors, str) or isinstance(return_daily_anchors, pd.Timedelta)
+            if return_daily_anchors == 'close_market':
+                shift_one = False
                         
         ic_series = {}
         ic_stats = {}
@@ -593,6 +602,8 @@ class FactorTester:
             factor_rank = self.calc_rank(self.factor_data[factor_name])
             return_df, _, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col, 
                                                                return_freq=return_freq, daily_anchors=return_daily_anchors)
+            if shift_one:
+                return_df = return_df.shift(-1)
             return_rank = self.calc_rank(return_df)
             dt_index = factor_rank.index.intersection(return_rank.index)
             start_date = start_date if start_date is not None else self.start_date
@@ -666,9 +677,20 @@ class FactorTester:
         Each group is a dict: {datetime_str: [contract names]}.
         n_groups: number of groups to split into (default: 5)
         """
-        # Calculate daily returns at next open
+
+        shift_one = True
+        if return_daily_anchors is not None:
+            if isinstance(return_daily_anchors, list) or isinstance(return_daily_anchors, tuple):
+                assert len(return_daily_anchors) == 1, "分类等权回测仅支持单一时间点作为每日锚点。"
+                return_daily_anchors = return_daily_anchors[0]
+            assert isinstance(return_daily_anchors, str) or isinstance(return_daily_anchors, pd.Timedelta)
+            if return_daily_anchors == 'close_market':
+                shift_one = False
+
         returns, delta_return, _ = self.cache_return_by_factor_name(factor_name, price_col=return_price_col,
                                                                     return_freq=return_freq, daily_anchors=return_daily_anchors)
+        if shift_one:
+            returns = returns.shift(-1)
 
         if not delta_return:
             returns = returns - 1
@@ -760,7 +782,7 @@ class FactorTester:
                 plt.plot([str(date) for date in dates], cumulative_returns, label=name)
             plt.xlabel('Date')
             plt.ylabel('Average Next Day Open Return')
-            plt.title('Average Next Day Open Return by Factor Groups')
+            plt.title(f'Average Next Day Open Return by Factor Groups for {factor_name}')
             plt.legend()
             # Only show every nth tick to reduce crowding
             n_ticks = 10
@@ -772,8 +794,8 @@ class FactorTester:
 
         return groups, returns_groups
     
-def process_daily_anchors(data_freq: pd.Timedelta, daily_anchors: str|pd.Timedelta|List[pd.Timedelta|str]) -> List[int]:
-    if not isinstance(daily_anchors, list):
+def process_daily_anchors(data_freq: pd.Timedelta, daily_anchors: Any) -> List[int]:
+    if not isinstance(daily_anchors, list) and not isinstance(daily_anchors, tuple):
         daily_anchors = [daily_anchors]
     offset = []
     for idx in range(len(daily_anchors)):
@@ -817,6 +839,7 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
         if daily_anchors is not None:
             return_freq = return_freq * len(offset)
     assert isinstance(return_freq, int) and return_freq > 0
+    # returns = daily_price.nth(offset).pct_change(periods=return_freq).shift(-return_freq*2)
     returns = daily_price.nth(offset).pct_change(periods=return_freq).shift(-return_freq)
     assert isinstance(returns, pd.Series)
     return returns
@@ -847,7 +870,8 @@ def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callabl
     tester = get_factor_tester()
     tester.calc_factor(factors)
 
-    _, stats = tester.calc_ic(factors=factors, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
+    _, stats = tester.calc_ic(factors=factors, return_price_col='open_price_adjusted',
+                              return_daily_anchors='open_market', return_freq='2 days')
     print('IC Stats Median t_stat:', stats.loc['t_stat'].median())
     if len(stats.columns) >= 4:
         stats = stats.T.sort_values('t_stat', ascending=False)
