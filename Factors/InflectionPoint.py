@@ -2,10 +2,10 @@ import numpy as np
 import pandas as pd
 import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from FactorTester import factor_test, FactorGrid, PriceColumnMapping
+from FactorTester import FactorGrid, PriceColumnMapping
 from typing import List, Dict, Any
 
-class InflectionPoint(FactorGrid):
+class InflP(FactorGrid): # Inflection Point
 
     params_space: Dict[str, List[Any]] = {
         'PC': list(PriceColumnMapping.keys()),
@@ -24,6 +24,4 @@ class InflectionPoint(FactorGrid):
         return factor
 
 if __name__ == '__main__':
-    FG = InflectionPoint('IP')
-    # FG.factor_test(n_groups=5)
-    FG.factor_grid_test(PC=['CA', 'OA'], W=[5, 10])
+    InflP().factor_grid_test()

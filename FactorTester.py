@@ -18,6 +18,8 @@ PriceColumnMapping = {
     'L': 'lowest_price',
     'CA': 'close_price_adjusted',
     'OA': 'open_price_adjusted',
+    'HA': 'highest_price_adjusted',
+    'LA': 'lowest_price_adjusted'
 }
 
 import inspect
@@ -28,8 +30,8 @@ class FactorGrid:
     # 子类需覆盖：默认参数
     default_params: Dict[str, Any] = {}
 
-    def __init__(self, factor_name_stem: str):
-        self.factor_name_stem = factor_name_stem
+    def __init__(self, factor_name_stem: Optional[str] = None):
+        self.factor_name_stem = factor_name_stem if factor_name_stem else self.__class__.__name__
         self.current_params_space = self.params_space
 
     def _factor_func(self, df: pd.DataFrame, *args, **kwargs) -> pd.Series:
@@ -829,7 +831,7 @@ def get_factor_tester(start_date: Optional[str] = None, end_date: Optional[str] 
     
     tester = FactorTester(file_list, #start_date='2025-01-01', 
                     end_date='2025-05-30', 
-                    futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
+                    futures_flag=True, futures_adjust_col=['close_price', 'open_price', 'highest_price', 'lowest_price'])
     
     return tester
 
@@ -846,9 +848,11 @@ def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callabl
     tester.calc_factor(factors)
 
     _, stats = tester.calc_ic(factors=factors, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
-    print('IC Stats:\n', stats)
+    # print('IC Stats:\n', stats)
+    stats_top4 = stats.T.nlargest(4, columns='t_stat').T
+    print('Top 4 Factors by t_stat:\n', stats_top4)
+    factor_names = stats_top4.columns.tolist()
 
-    factor_names = stats.columns.tolist()
     which_factor = int(input(f'选择哪一个因子进行分类回测 (1 - {len(factor_names)}): ')) - 1
 
     groups, returns_groups = tester.group_classes(factor_names[which_factor], 
