@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from FactorTester import integrated_ic_test_daily, FactorGrid, PriceColumnMapping
+from FactorTester import factor_test, FactorGrid, PriceColumnMapping
 from typing import List, Dict, Any
 
 class InflectionPoint(FactorGrid):
@@ -14,11 +14,7 @@ class InflectionPoint(FactorGrid):
 
     default_params: Dict[str, Any] = {'PC': 'CA', 'W': 5}
 
-    def factor_func(self, df: pd.DataFrame, **kwargs) -> pd.Series:
-
-        PC = self.get_param(kwargs, 'PC')
-        W = self.get_param(kwargs, 'W')
-        
+    def _factor_func(self, df: pd.DataFrame, PC: str = 'CA', W: int = 5) -> pd.Series:
         price = df[PriceColumnMapping[PC]]
         direction = pd.Series(np.sign(price.diff()), index=price.index)
         inflection = (direction != direction.shift(1)) & (direction != 0) & (direction.shift(1) != 0)
@@ -29,7 +25,4 @@ class InflectionPoint(FactorGrid):
 
 if __name__ == '__main__':
     FG = InflectionPoint('InflectionPoint')
-    # name, func = FG.get_factor()
-    # integrated_ic_test_daily(func, n_groups=5, factor_name=name)
-    # print(FG.gen_grid())
-    integrated_ic_test_daily(factor_name_func=FG.get_factor(), n_groups=5)
+    FG.factor_test(n_groups=5)

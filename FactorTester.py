@@ -31,7 +31,7 @@ class FactorGrid:
     def __init__(self, factor_name_stem: str):
         self.factor_name_stem = factor_name_stem
 
-    def factor_func(self, df: pd.DataFrame, **kwargs) -> pd.Series:
+    def _factor_func(self, df: pd.DataFrame, *args, **kwargs) -> pd.Series:
         raise NotImplementedError("请在子类中实现 `factor_func` 方法。")
     
     def get_param(self, kwargs, k: str):
@@ -56,7 +56,7 @@ class FactorGrid:
 
     def get_factor_func(self, **kwargs) -> Callable[[pd.DataFrame], pd.Series]:
         params = self._get_complete_params(**kwargs)
-        return lambda df: self.factor_func(df, **params)
+        return lambda df: self._factor_func(df, **params)
 
     def get_factor_name(self, **kwargs) -> str:
         params = self._get_complete_params(**kwargs)
@@ -88,7 +88,15 @@ class FactorGrid:
             grid_configs.append(self.get_factor(**spec_kwargs))
             
         return grid_configs
+    
+    def factor_test(self, n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None, **kwargs):
+        params = self._get_complete_params(**kwargs)
+        factor_test(self.get_factor(**params), n_groups=n_groups, plot_n_group_list=plot_n_group_list)
 
+    def factor_grid_test(self):
+        for factor_name, factor_func in self.gen_grid():
+            self.factor_test(factor_name=factor_name, factor_func=factor_func)
+        
 class FactorTester:
     def __init__(self, file_paths: List[str], 
                  start_date: Optional[str] = None, end_date: Optional[str] = None,
@@ -753,9 +761,8 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
     assert isinstance(returns, pd.Series)
     return returns
 
-def integrated_ic_test_daily(factor_name_func: tuple[str, Callable],
-                # factor_func: Callable, factor_name: Optional[str] = None,
-                             n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
+def factor_test(factor_name_func: tuple[str, Callable],
+                n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
     
     # import cProfile
     # import pstats
