@@ -24,6 +24,6 @@ class InflectionPoint(FactorGrid):
         return factor
 
 if __name__ == '__main__':
-    FG = InflectionPoint('InflectionPoint')
+    FG = InflectionPoint('IP')
     # FG.factor_test(n_groups=5)
     FG.factor_grid_test(PC=['CA', 'OA'], W=[5, 10])

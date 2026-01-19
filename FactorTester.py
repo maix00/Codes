@@ -78,6 +78,9 @@ class FactorGrid:
     def get_factor_list(self, **kwargs) -> List[tuple[str, Callable]]:
         return self.get_factor_tensor(**kwargs).flatten().tolist()
     
+    def get_factor_name_list(self, **kwargs) -> List[str]:
+        return [name for name, func in self.get_factor_list(**kwargs)]
+    
     def get_param_tensor_shape(self, **kwargs) -> tuple[int, ...]:
         self._set_current_params_space(**kwargs)
         return tuple(len(v) for v in self.current_params_space.values())
@@ -560,12 +563,14 @@ class FactorTester:
     def calc_rank(self, df: pd.DataFrame) -> pd.DataFrame:
         return df.rank(axis=1, method='average', na_option='keep', pct=True)
 
-    def calc_ic(self, factor_names: str|List[str], 
+    def calc_ic(self, factor_names: str|List[str]|FactorGrid, 
                 return_price_col: str = 'close_price_adjusted',
                 return_freq: Optional[str|pd.Timedelta] = None,
                 return_daily_anchors: Optional[str|pd.Timedelta|List[pd.Timedelta|str]] = None,
                 start_date: Optional[str] = None, end_date: Optional[str] = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-        if isinstance(factor_names, str):
+        if isinstance(factor_names, FactorGrid):
+            factor_names = factor_names.get_factor_name_list()
+        elif isinstance(factor_names, str):
             factor_names = [factor_names]
         ic_series = {}
         ic_stats = {}
@@ -802,15 +807,7 @@ def daily_return(df: pd.DataFrame, price_col: str = 'close_price',
     assert isinstance(returns, pd.Series)
     return returns
 
-def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callable]],
-                n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
-    
-    # import cProfile
-    # import pstats
-
-    # profiler = cProfile.Profile()
-    # profiler.enable()
-
+def get_factor_tester(start_date: Optional[str] = None, end_date: Optional[str] = None) -> FactorTester:
     parquet_dir = '../data/main_mink/'
     file_list = [
         os.path.join(parquet_dir, f)
@@ -821,20 +818,38 @@ def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callabl
     tester = FactorTester(file_list, #start_date='2025-01-01', 
                     end_date='2025-05-30', 
                     futures_flag=True, futures_adjust_col=['close_price', 'open_price'])
+    
+    return tester
 
+
+def factor_test(factors: FactorGrid|tuple[str, Callable]|List[tuple[str, Callable]],
+                n_groups: int = 5, plot_n_group_list: Optional[List[int]] = None,):
+    
+    # import cProfile
+    # import pstats
+
+    # profiler = cProfile.Profile()
+    # profiler.enable()
+
+    tester = get_factor_tester()
     tester.calc_factor(factors)
 
     factor_name = None
+    factor_name_list = None
     if isinstance(factors, tuple) and isinstance(factors[0], str):
         factor_name = factors[0]
+        factor_name_list = factor_name
     elif isinstance(factors, list) and factors and isinstance(factors[0], tuple) and isinstance(factors[0][0], str):
         factor_name = factors[0][0]
+        factor_name_list = [name for name, _ in factors]
     elif isinstance(factors, FactorGrid):
         factor_name = factors.get_factor_name()
+        factor_name_list = factors
     assert factor_name is not None
+    assert factor_name_list is not None
 
-    _, stats = tester.calc_ic(factor_names=factor_name, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
-    print(factor_name, 'IC Stats:\n', stats)
+    _, stats = tester.calc_ic(factor_names=factor_name_list, return_price_col='open_price_adjusted', return_daily_anchors='open_market')
+    print('IC Stats:\n', stats)
 
     groups, returns_groups = tester.group_classes(factor_name, 
                                                 plot_flag=True, n_groups=n_groups, plot_n_group_list=plot_n_group_list,
